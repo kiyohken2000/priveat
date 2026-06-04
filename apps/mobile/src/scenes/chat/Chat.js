@@ -8,7 +8,8 @@ import {
   View,
 } from 'react-native'
 import { Bubble, GiftedChat, InputToolbar } from 'react-native-gifted-chat'
-import { QWEN3_0_6B_QUANTIZED, useLLM } from 'react-native-executorch'
+import { useLLM } from 'react-native-executorch'
+import { useActiveModel } from '../../state/modelContext'
 import * as Haptics from 'expo-haptics'
 import { useActionSheet } from '@expo/react-native-action-sheet'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
@@ -167,7 +168,9 @@ const parseAndEnrich = async (content, idx) => {
 }
 
 export default function Chat() {
-  const llm = useLLM({ model: QWEN3_0_6B_QUANTIZED })
+  const { activeModel } = useActiveModel()
+  // activeModel が変わると useLLM は新しいモデルで再初期化される（hot-swap）。
+  const llm = useLLM({ model: activeModel.source })
   const [localMessages, setLocalMessages] = useState([])
   const [llmCards, setLlmCards] = useState({}) // { historyIndex: { foodItems? | error? } }
   const [ocrBusy, setOcrBusy] = useState(false)
@@ -461,7 +464,7 @@ export default function Chat() {
             {downloading ? 'モデルをダウンロード中' : 'モデルをロード中'}
           </Text>
           {downloading && <Text style={styles.subtitle}>{pct}%</Text>}
-          <Text style={styles.note}>初回のみ。Qwen3-0.6B（量子化版）</Text>
+          <Text style={styles.note}>初回のみ。{activeModel.label}</Text>
         </View>
       </ScreenTemplate>
     )

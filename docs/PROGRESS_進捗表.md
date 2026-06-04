@@ -114,16 +114,16 @@
 
 ## フェーズ6: ヘルス連携
 
-- [x] ヘルス連携ライブラリ導入（react-native-health-link）
-- [ ] iOS: HealthKit entitlement 有効化 ＋ `NSHealthShareUsageDescription`（書込もするなら `NSHealthUpdateUsageDescription`）を app.json に追加
-- [ ] Android: Health Connect 権限（`READ_ACTIVE_CALORIES_BURNED` / `READ_WEIGHT` / `READ_STEPS` 等）を追加
-- [ ] iOS HealthKit 連携（アクティブエネルギー・体重・歩数）
-- [ ] Android Health Connect 連携
-- [ ] 権限リクエストのUX
-- [ ] `energy_log` / `weight_log` への取り込み
-- [ ] スクショ入力との使い分け
+- [x] ヘルス連携ライブラリ導入（@kingstinct/react-native-healthkit + react-native-health-connect、react-native-health-link は新アーキ非対応のため離脱）
+- [x] iOS: HealthKit entitlement 有効化 ＋ `NSHealthShareUsageDescription` / `NSHealthUpdateUsageDescription` を app.json に追加
+- [x] Android: Health Connect 権限（`READ_ACTIVE_CALORIES_BURNED` / `READ_WEIGHT` / `READ_STEPS`）を追加
+- [x] iOS HealthKit 連携（アクティブエネルギー・体重・歩数、`queryStatisticsCollectionForQuantity` でネイティブ集計）
+- [x] Android Health Connect 連携（raw sample query、Phase 7 で動作確認予定）
+- [x] 権限リクエストのUX（設定 > ヘルス連携の「ヘルス連携を許可して同期する」ボタン）
+- [x] `energy_log` / `weight_log` への取り込み（日次集計、source='health' で重複防止 upsert、最終同期日時を AsyncStorage に保存）
+- [x] スクショ入力との使い分け（source 列で 'ocr' / 'health' / 'manual' を区別）
 
-**DoD**: 連携を許可すると、消費カロリーと体重が自動取得される。
+**DoD**: 連携を許可すると、消費カロリーと体重が自動取得される。✅
 
 ---
 

@@ -8,6 +8,7 @@ import { ExpoResourceFetcher } from 'react-native-executorch-expo-resource-fetch
 import store from 'utils/store'
 import 'utils/ignore'
 import { initDb } from './db'
+import { ModelProvider } from './state/modelContext'
 
 // assets
 import { imageAssets } from 'theme/images'
@@ -64,7 +65,9 @@ export default function App() {
     <SafeAreaProvider>
       <ActionSheetProvider>
         <Provider store={store}>
-          <Router />
+          <ModelProvider>
+            <Router />
+          </ModelProvider>
         </Provider>
       </ActionSheetProvider>
     </SafeAreaProvider>

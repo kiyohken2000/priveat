@@ -38,7 +38,10 @@
       "permissions": [
         "android.permission.VIBRATE",
         "android.permission.CAMERA",
-        "android.permission.READ_MEDIA_IMAGES"
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.health.READ_WEIGHT",
+        "android.permission.health.READ_ACTIVE_CALORIES_BURNED",
+        "android.permission.health.READ_STEPS"
       ]
     },
     "runtimeVersion": {
@@ -72,6 +75,9 @@
         {
           "ios": {
             "deploymentTarget": "17.0"
+          },
+          "android": {
+            "minSdkVersion": 26
           }
         }
       ],
@@ -92,7 +98,20 @@
           "enableEntitlements": true
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-video",
+      "expo-sharing",
+      "expo-background-task",
+      [
+        "@kingstinct/react-native-healthkit",
+        {
+          "NSHealthShareUsageDescription": "体重・消費カロリー・歩数を読み取り、Priveat の記録に同期するためにヘルスケアにアクセスします。",
+          "NSHealthUpdateUsageDescription": "Priveat で記録した体重・カロリーをヘルスケアに保存するためにアクセスします。",
+          "background": false
+        }
+      ],
+      "react-native-health-connect",
+      "@react-native-community/datetimepicker"
     ],
     "extra": {
       "eas": {
