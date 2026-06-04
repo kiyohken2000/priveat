@@ -16,26 +16,31 @@ export const cycleNextPortion = (value) => {
   return next.value
 }
 
-export const computeKcal = (item) => Math.round(item.baseKcal * portionMeta(item.portion).factor)
+export const computeKcal = (item) => {
+  if (item.baseKcal == null) return null
+  return Math.round(item.baseKcal * portionMeta(item.portion).factor)
+}
 
-export default function FoodCard({ message, onUpdateItem }) {
+export default function FoodCard({ message, onUpdateItem, title }) {
   const items = message.foodItems ?? []
-  const totalKcal = items.reduce((sum, it) => sum + computeKcal(it), 0)
+  const kcals = items.map(computeKcal)
+  const hasUnknownKcal = kcals.some((k) => k == null)
+  const totalKcal = kcals.reduce((sum, k) => sum + (k ?? 0), 0)
   const dailyTarget = message.dailyTotal?.target
 
   return (
     <View style={styles.card}>
-      <Text style={styles.title}>食品カード（ダミー）</Text>
-      {items.map((item) => {
+      {title ? <Text style={styles.title}>{title}</Text> : null}
+      {items.map((item, i) => {
         const meta = portionMeta(item.portion)
-        const kcal = computeKcal(item)
+        const kcal = kcals[i]
         return (
-          <View key={item.id} style={styles.row}>
+          <View key={item.id ?? `${item.name}-${i}`} style={styles.row}>
             <View style={styles.rowMain}>
               <Text style={styles.name}>{item.name}</Text>
               <Text style={styles.detail}>
                 {item.quantity}
-                {item.unit} · {kcal} kcal
+                {item.unit} · {kcal == null ? '— kcal' : `${kcal} kcal`}
               </Text>
             </View>
             <TouchableOpacity
@@ -51,7 +56,7 @@ export default function FoodCard({ message, onUpdateItem }) {
       <View style={styles.total}>
         <Text style={styles.totalLabel}>合計</Text>
         <Text style={styles.totalValue}>
-          {totalKcal} kcal
+          {hasUnknownKcal ? '— kcal' : `${totalKcal} kcal`}
           {dailyTarget ? ` / ${dailyTarget} kcal` : ''}
         </Text>
       </View>

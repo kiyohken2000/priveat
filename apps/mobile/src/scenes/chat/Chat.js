@@ -7,25 +7,47 @@ import {
   View,
 } from 'react-native'
 import { Bubble, GiftedChat, InputToolbar } from 'react-native-gifted-chat'
-import { useLLM, QWEN3_0_6B_QUANTIZED } from 'react-native-executorch'
+import { QWEN3_0_6B_QUANTIZED, useLLM } from 'react-native-executorch'
 import ScreenTemplate from '../../components/ScreenTemplate'
 import { colors, fontSize } from '../../theme'
 import FoodCard from './FoodCard'
+import { getFoodSchemaPrompt, normalizePortion, parseFoodOutput } from './schema'
 
 const USER = { _id: 1 }
 const ASSISTANT = { _id: 2, name: 'AI' }
 
-const SYSTEM_PROMPT = `あなたは日本語で簡潔に答えるアシスタントです。
-推論プロセスは出力せず、答えだけを返してください。
-/no_think`
+const PARSER_SYSTEM_PROMPT = `あなたは食事の記述を構造化データに変換するパーサーです。
+ユーザーが日本語で書いた食事内容を、食品ごとに分解してJSONで出力してください。
 
-const stripThink = (text) => {
-  if (!text) return text
-  let out = text.replace(/<think>[\s\S]*?<\/think>\s*/g, '')
-  const openIdx = out.indexOf('<think>')
-  if (openIdx >= 0) out = out.slice(0, openIdx)
-  return out
-}
+ルール:
+- 各食品について name（食品名）, quantity（数量）, unit（単位）を抽出する
+- name は一般的な表記に正規化する
+- ユーザーが書いた数量はそのままの数値を使う（200g なら quantity=200, unit="g"。途中で桁を削らない）
+- 数量や単位は、それが書かれている品目だけに付ける（他の品目に勝手にコピーしない）
+- 単位は g / 個 / 本 / 杯 / 枚 / 切 / 缶 / 袋 / 人前 など自然なものを選ぶ
+- 「大盛り」「少なめ」などのニュアンスは portion に入れる（書かれている品目だけ）
+- カロリーや栄養素は推定しない
+- 数量も単位もどちらも書かれていない品目だけ quantity=1, unit="人前" にする
+- 食品を含まない入力は items を空配列 [] にする
+
+ユーザーへの返答はしない。JSONだけを返すこと。`
+
+const FEW_SHOT_EXAMPLES = `以下の例を参考にしてください:
+
+入力: 食パン1枚とゆで卵2個
+出力: {"items":[{"name":"食パン","quantity":1,"unit":"枚"},{"name":"ゆで卵","quantity":2,"unit":"個"}]}
+
+入力: ささみ200gとブロッコリー100g
+出力: {"items":[{"name":"ささみ","quantity":200,"unit":"g"},{"name":"ブロッコリー","quantity":100,"unit":"g"}]}
+
+入力: ごはん大盛りと焼き魚
+出力: {"items":[{"name":"ごはん","quantity":1,"unit":"杯","portion":"大盛り"},{"name":"焼き魚","quantity":1,"unit":"切"}]}
+
+入力: お腹すいた
+出力: {"items":[]}`
+
+const buildSystemPrompt = () =>
+  `${PARSER_SYSTEM_PROMPT}\n${getFoodSchemaPrompt()}\n${FEW_SHOT_EXAMPLES}\n/no_think`
 
 const makeDummyCardMessage = () => {
   const stamp = Date.now()
@@ -40,6 +62,7 @@ const makeDummyCardMessage = () => {
       { id: 'f3', name: 'みそ汁', quantity: 1, unit: '杯', portion: 'normal', baseKcal: 40 },
     ],
     dailyTotal: { target: 2000 },
+    isDummy: true,
   }
 }
 
@@ -53,17 +76,65 @@ const makeUserMessage = (text) => {
   }
 }
 
+const parseAssistantContent = (content, idx) => {
+  try {
+    const parsed = parseFoodOutput(content)
+    return {
+      foodItems: parsed.items.map((it, j) => ({
+        id: `${idx}-${j}`,
+        name: it.name,
+        quantity: it.quantity,
+        unit: it.unit,
+        portion: normalizePortion(it.portion),
+      })),
+    }
+  } catch (e) {
+    return { error: e?.message ?? String(e) }
+  }
+}
+
 export default function Chat() {
   const llm = useLLM({ model: QWEN3_0_6B_QUANTIZED })
   const [localMessages, setLocalMessages] = useState([])
+  const [llmCards, setLlmCards] = useState({}) // { historyIndex: { foodItems? | error? } }
   const llmTimestampsRef = useRef([])
 
+  // Configure LLM as a structured-output parser once it's ready
   useEffect(() => {
     if (llm.isReady) {
-      llm.configure({ chatConfig: { systemPrompt: SYSTEM_PROMPT } })
+      llm.configure({
+        chatConfig: { systemPrompt: buildSystemPrompt() },
+        generationConfig: { temperature: 0.2 },
+      })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [llm.isReady])
+
+  // Parse any complete assistant messages that haven't been parsed yet
+  useEffect(() => {
+    if (llm.isGenerating) return
+    setLlmCards((prev) => {
+      let updated = prev
+      const base = llm.messageHistory.filter((m) => m.role !== 'system')
+      base.forEach((m, idx) => {
+        if (m.role === 'assistant' && !updated[idx]) {
+          const userMsg = base[idx - 1]?.content
+          console.log('========== Chat log ==========')
+          if (userMsg) console.log('[USER]', userMsg)
+          console.log('[LLM raw]', m.content)
+          const result = parseAssistantContent(m.content, idx)
+          if (result.foodItems) {
+            console.log('[parsed items]', JSON.stringify(result.foodItems, null, 2))
+          } else {
+            console.log('[parse error]', result.error)
+          }
+          console.log('==============================')
+          updated = { ...updated, [idx]: result }
+        }
+      })
+      return updated
+    })
+  }, [llm.messageHistory, llm.isGenerating])
 
   const messages = useMemo(() => {
     const items = []
@@ -74,28 +145,36 @@ export default function Chat() {
       stamps.push(Math.max(Date.now(), prev + 1))
     }
     base.forEach((m, i) => {
-      items.push({
-        _id: `h-${i}`,
-        text: m.role === 'assistant' ? stripThink(m.content) : m.content,
-        createdAt: new Date(stamps[i]),
-        user: m.role === 'user' ? USER : ASSISTANT,
-      })
-    })
-    if (llm.isGenerating) {
-      const streamed = stripThink(llm.response)
-      if (streamed) {
+      const createdAt = new Date(stamps[i])
+      if (m.role === 'user') {
+        items.push({ _id: `h-${i}`, text: m.content, createdAt, user: USER })
+        return
+      }
+      // assistant
+      const card = llmCards[i]
+      if (card?.foodItems) {
         items.push({
-          _id: 'streaming',
-          text: streamed,
-          createdAt: new Date(),
+          _id: `h-${i}`,
+          text: '',
+          createdAt,
           user: ASSISTANT,
+          foodItems: card.foodItems,
+        })
+      } else if (card?.error) {
+        items.push({
+          _id: `h-${i}`,
+          text: '食品を抽出できませんでした。もう少し具体的に書いてみてください。',
+          createdAt,
+          user: ASSISTANT,
+          isError: true,
         })
       }
-    }
+      // else: parse pending — show nothing yet (isTyping covers the gap)
+    })
     const all = [...items, ...localMessages]
     all.sort((a, b) => a.createdAt - b.createdAt)
     return all.reverse()
-  }, [llm.messageHistory, llm.response, llm.isGenerating, localMessages])
+  }, [llm.messageHistory, llmCards, localMessages])
 
   const onSend = useCallback(
     (sent) => {
@@ -112,23 +191,46 @@ export default function Chat() {
   )
 
   const updateFoodItem = useCallback((messageId, itemId, updates) => {
-    setLocalMessages((prev) =>
-      prev.map((m) =>
-        m._id === messageId && m.foodItems
-          ? {
-              ...m,
-              foodItems: m.foodItems.map((it) => (it.id === itemId ? { ...it, ...updates } : it)),
-            }
-          : m,
-      ),
-    )
+    if (messageId.startsWith('local-card-')) {
+      setLocalMessages((prev) =>
+        prev.map((m) =>
+          m._id === messageId && m.foodItems
+            ? {
+                ...m,
+                foodItems: m.foodItems.map((it) => (it.id === itemId ? { ...it, ...updates } : it)),
+              }
+            : m,
+        ),
+      )
+      return
+    }
+    if (messageId.startsWith('h-')) {
+      const idx = Number(messageId.slice(2))
+      setLlmCards((prev) => {
+        const entry = prev[idx]
+        if (!entry?.foodItems) return prev
+        return {
+          ...prev,
+          [idx]: {
+            ...entry,
+            foodItems: entry.foodItems.map((it) => (it.id === itemId ? { ...it, ...updates } : it)),
+          },
+        }
+      })
+    }
   }, [])
 
   const renderBubble = useCallback(
     (props) => {
       const current = props.currentMessage
       if (current?.foodItems) {
-        return <FoodCard message={current} onUpdateItem={updateFoodItem} />
+        return (
+          <FoodCard
+            message={current}
+            onUpdateItem={updateFoodItem}
+            title={current.isDummy ? '食品カード（ダミー）' : '抽出された食品'}
+          />
+        )
       }
       return <Bubble {...props} />
     },
@@ -138,8 +240,28 @@ export default function Chat() {
   const renderChatEmpty = useCallback(
     () => (
       <View style={styles.emptyWrap}>
-        <Text style={styles.emptyText}>メッセージを送ると AI が応答します。</Text>
-        <Text style={styles.emptyHint}>`/card` を送るとサンプル食品カードを表示します。</Text>
+        <Text style={styles.emptyText}>食べたものを送ると、自動で分解してカードにします。</Text>
+
+        <Text style={styles.sectionLabel}>おすすめの書き方（精度が高い）</Text>
+        <View style={styles.exampleBlock}>
+          <Text style={styles.exampleLine}>・プレーンヨーグルト200g</Text>
+          <Text style={styles.exampleLine}>・リンゴ1個</Text>
+          <Text style={styles.exampleLine}>・コーヒー1杯</Text>
+        </View>
+        <Text style={styles.captionText}>1行に1品ずつ、改行で区切ると最も正確です。</Text>
+
+        <Text style={styles.sectionLabel}>簡単な書き方（短文）</Text>
+        <View style={styles.exampleBlock}>
+          <Text style={styles.exampleLine}>カツ丼と缶チューハイ2本</Text>
+          <Text style={styles.exampleLine}>ごはん大盛りと焼き魚</Text>
+        </View>
+        <Text style={styles.captionText}>「〜と〜」でつないでも OK。短いほど精度が上がります。</Text>
+
+        <Text style={styles.sectionLabel}>コツ</Text>
+        <Text style={styles.captionText}>・数量と単位を書く（例: 食パン1枚、缶チューハイ2本、ささみ200g）</Text>
+        <Text style={styles.captionText}>・「大盛り」「少なめ」などのニュアンスも書ける</Text>
+
+        <Text style={styles.emptyHintDev}>（開発用）`/card` でサンプル食品カードを表示</Text>
       </View>
     ),
     [],
@@ -183,7 +305,7 @@ export default function Chat() {
         onSend={onSend}
         user={USER}
         placeholder="メッセージを入力"
-        isTyping={llm.isGenerating && !llm.response}
+        isTyping={llm.isGenerating}
         minComposerHeight={48}
         renderBubble={renderBubble}
         renderAvatar={null}
@@ -249,20 +371,47 @@ const styles = StyleSheet.create({
   },
   emptyWrap: {
     flex: 1,
-    alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
+    paddingHorizontal: 24,
+    paddingVertical: 16,
     transform: [{ scaleY: -1 }],
   },
   emptyText: {
     fontSize: fontSize.middle,
-    color: colors.gray,
+    color: colors.darkPurple,
     textAlign: 'center',
+    fontWeight: '600',
+    marginBottom: 18,
   },
-  emptyHint: {
+  sectionLabel: {
+    fontSize: fontSize.small,
+    color: colors.darkPurple,
+    fontWeight: '700',
+    marginTop: 12,
+    marginBottom: 6,
+  },
+  exampleBlock: {
+    backgroundColor: colors.lightGrayPurple,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    alignSelf: 'stretch',
+  },
+  exampleLine: {
+    fontSize: fontSize.small,
+    color: colors.black,
+    lineHeight: 20,
+  },
+  captionText: {
     fontSize: fontSize.small,
     color: colors.gray,
-    marginTop: 8,
+    marginTop: 6,
+  },
+  emptyHintDev: {
+    fontSize: fontSize.small,
+    color: colors.gray,
+    marginTop: 20,
     textAlign: 'center',
+    fontStyle: 'italic',
   },
 })

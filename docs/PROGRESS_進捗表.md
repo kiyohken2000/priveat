@@ -62,13 +62,16 @@
 
 ## フェーズ3: 食事のテキスト構造化（LLM）
 
-- [ ] スキーマ定義（Zod または jsonschema）
-- [ ] `getStructuredOutputPrompt(schema)` でフォーマット指示文を作りシステムプロンプトに組込
-- [ ] 生成後に `fixAndValidateStructuredOutput(output, schema)` で補修・検証
-- [ ] few-shot を組み込み正規化精度を確認
-- [ ] LLM出力JSON → 拡張IMessage → 食品カード の流れを接続
-- [ ] 抽出失敗・スキーマ不一致時のフォールバック（再入力/手入力）
+- [x] スキーマ定義（plain JSON Schema を採用。zod v4 は executorch が内部で `responseSchema instanceof zCore.$ZodType` を呼び、RN ランタイムで `$ZodType` が undefined になるため不可）
+- [x] フォーマット指示文をシステムプロンプトに組込（executorch の `getStructuredOutputPrompt` をバイパスし、同等テンプレを `schema.js` に自前実装）
+- [x] 生成後にパース・検証（同じ理由で `fixAndValidateStructuredOutput` を使わず `extractBetweenBrackets + jsonrepair + JSON.parse + 形状チェック` を自前実装）
+- [x] few-shot を組み込み正規化精度を確認（4例: と-連結時の単位保持・g 数値保持・portion スコープ・非食品の空配列）
+- [x] LLM出力JSON → 拡張IMessage → 食品カード の流れを接続（assistant メッセージは FoodCard で描画、テキスト吹き出しは廃止）
+- [x] 抽出失敗・スキーマ不一致時のフォールバック（「食品を抽出できませんでした」を表示）
+- [ ] 同一セッション内の chat history 文脈流入対策（毎回 configure リセットで単発抽出化）→ フェーズ4 以降で対応
 - [ ] （必要時）JSONが安定しない場合に予備 llama.rn（GBNF文法）へ回す経路を検討
+
+**ユーザー向けに入力ガイドを実装**: 空チャット画面に「おすすめ書き方（箇条書き）」「簡単書き方（と-連結）」「コツ（数量+単位を明示）」を例示することで、モデル精度に頼らない UX 改善も実施。実測で箇条書き入力は完璧に動く。
 
 **DoD**: 「カツ丼と缶チューハイ2本」と送ると、食品リストに分解されカードに出る。
 
