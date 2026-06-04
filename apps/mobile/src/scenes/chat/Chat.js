@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   StatusBar,
@@ -6,10 +6,11 @@ import {
   Text,
   View,
 } from 'react-native'
-import { GiftedChat, InputToolbar } from 'react-native-gifted-chat'
+import { Bubble, GiftedChat, InputToolbar } from 'react-native-gifted-chat'
 import { useLLM, QWEN3_0_6B_QUANTIZED } from 'react-native-executorch'
 import ScreenTemplate from '../../components/ScreenTemplate'
 import { colors, fontSize } from '../../theme'
+import FoodCard from './FoodCard'
 
 const USER = { _id: 1 }
 const ASSISTANT = { _id: 2, name: 'AI' }
@@ -26,8 +27,36 @@ const stripThink = (text) => {
   return out
 }
 
+const makeDummyCardMessage = () => {
+  const stamp = Date.now()
+  return {
+    _id: `local-card-${stamp}`,
+    text: '',
+    createdAt: new Date(stamp),
+    user: ASSISTANT,
+    foodItems: [
+      { id: 'f1', name: 'ごはん', quantity: 150, unit: 'g', portion: 'normal', baseKcal: 252 },
+      { id: 'f2', name: 'カツ丼', quantity: 1, unit: '人前', portion: 'normal', baseKcal: 893 },
+      { id: 'f3', name: 'みそ汁', quantity: 1, unit: '杯', portion: 'normal', baseKcal: 40 },
+    ],
+    dailyTotal: { target: 2000 },
+  }
+}
+
+const makeUserMessage = (text) => {
+  const stamp = Date.now()
+  return {
+    _id: `local-user-${stamp}`,
+    text,
+    createdAt: new Date(stamp),
+    user: USER,
+  }
+}
+
 export default function Chat() {
   const llm = useLLM({ model: QWEN3_0_6B_QUANTIZED })
+  const [localMessages, setLocalMessages] = useState([])
+  const llmTimestampsRef = useRef([])
 
   useEffect(() => {
     if (llm.isReady) {
@@ -38,13 +67,17 @@ export default function Chat() {
 
   const messages = useMemo(() => {
     const items = []
-    const now = Date.now()
     const base = llm.messageHistory.filter((m) => m.role !== 'system')
+    const stamps = llmTimestampsRef.current
+    while (stamps.length < base.length) {
+      const prev = stamps[stamps.length - 1] ?? 0
+      stamps.push(Math.max(Date.now(), prev + 1))
+    }
     base.forEach((m, i) => {
       items.push({
         _id: `h-${i}`,
         text: m.role === 'assistant' ? stripThink(m.content) : m.content,
-        createdAt: new Date(now - (base.length - i) * 1000),
+        createdAt: new Date(stamps[i]),
         user: m.role === 'user' ? USER : ASSISTANT,
       })
     })
@@ -54,18 +87,63 @@ export default function Chat() {
         items.push({
           _id: 'streaming',
           text: streamed,
-          createdAt: new Date(now),
+          createdAt: new Date(),
           user: ASSISTANT,
         })
       }
     }
-    return items.reverse()
-  }, [llm.messageHistory, llm.response, llm.isGenerating])
+    const all = [...items, ...localMessages]
+    all.sort((a, b) => a.createdAt - b.createdAt)
+    return all.reverse()
+  }, [llm.messageHistory, llm.response, llm.isGenerating, localMessages])
 
-  const onSend = (sent) => {
-    if (!sent.length || !llm.isReady || llm.isGenerating) return
-    llm.sendMessage(sent[0].text)
-  }
+  const onSend = useCallback(
+    (sent) => {
+      if (!sent.length) return
+      const text = sent[0].text
+      if (text.trim() === '/card') {
+        setLocalMessages((prev) => [...prev, makeUserMessage(text), makeDummyCardMessage()])
+        return
+      }
+      if (!llm.isReady || llm.isGenerating) return
+      llm.sendMessage(text)
+    },
+    [llm],
+  )
+
+  const updateFoodItem = useCallback((messageId, itemId, updates) => {
+    setLocalMessages((prev) =>
+      prev.map((m) =>
+        m._id === messageId && m.foodItems
+          ? {
+              ...m,
+              foodItems: m.foodItems.map((it) => (it.id === itemId ? { ...it, ...updates } : it)),
+            }
+          : m,
+      ),
+    )
+  }, [])
+
+  const renderBubble = useCallback(
+    (props) => {
+      const current = props.currentMessage
+      if (current?.foodItems) {
+        return <FoodCard message={current} onUpdateItem={updateFoodItem} />
+      }
+      return <Bubble {...props} />
+    },
+    [updateFoodItem],
+  )
+
+  const renderChatEmpty = useCallback(
+    () => (
+      <View style={styles.emptyWrap}>
+        <Text style={styles.emptyText}>メッセージを送ると AI が応答します。</Text>
+        <Text style={styles.emptyHint}>`/card` を送るとサンプル食品カードを表示します。</Text>
+      </View>
+    ),
+    [],
+  )
 
   if (llm.error) {
     return (
@@ -107,6 +185,9 @@ export default function Chat() {
         placeholder="メッセージを入力"
         isTyping={llm.isGenerating && !llm.response}
         minComposerHeight={48}
+        renderBubble={renderBubble}
+        renderAvatar={null}
+        renderChatEmpty={renderChatEmpty}
         renderInputToolbar={(props) => (
           <InputToolbar
             {...props}
@@ -165,5 +246,23 @@ const styles = StyleSheet.create({
     color: colors.black,
     backgroundColor: colors.white,
     fontSize: fontSize.middle,
+  },
+  emptyWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+    transform: [{ scaleY: -1 }],
+  },
+  emptyText: {
+    fontSize: fontSize.middle,
+    color: colors.gray,
+    textAlign: 'center',
+  },
+  emptyHint: {
+    fontSize: fontSize.small,
+    color: colors.gray,
+    marginTop: 8,
+    textAlign: 'center',
   },
 })

@@ -47,14 +47,14 @@
 
 ## フェーズ2: チャットUI と食品カード
 
-- [ ] react-native-gifted-chat と依存（reanimated / gesture-handler / safe-area-context / keyboard-controller）を導入
-- [ ] チャット画面に Gifted Chat を表示
-- [ ] `IMessage` を拡張（`foodItems`, `dailyTotal` 等の独自フィールド）
-- [ ] `renderCustomView` で食品カードを描画（編集可能な行・量のピル・合計バー）
-- [ ] 量タップでの編集（portion / quantity 変更）
-- [ ] Composer Actions（写真・スクショ添付ボタン）
-- [ ] Typing インジケータ（LLM生成待ち表示）
-- [ ] チャットメッセージの永続化（`chat_messages`）
+- [x] react-native-gifted-chat と依存（reanimated / gesture-handler / safe-area-context / keyboard-controller）を導入
+- [x] チャット画面に Gifted Chat を表示
+- [x] `IMessage` を拡張（`foodItems`, `dailyTotal` 等の独自フィールド）
+- [x] `renderBubble` で食品カードを描画（編集可能な行・量のピル・合計バー）※ spec の `renderCustomView` から `renderBubble` に変更（カード全体を吹き出しの代わりにする方が綺麗）
+- [x] 量タップでの編集（portion 循環、kcal 再計算）
+- [ ] Composer Actions（写真・スクショ添付ボタン）→ フェーズ5（OCR）と一括で実装
+- [x] Typing インジケータ（LLM生成待ち表示）
+- [ ] チャットメッセージの永続化（`chat_messages`）→ フェーズ4（SQLite）と一括で実装
 
 **DoD**: チャットに送ると、編集可能な食品カードが吹き出し内に表示される（ダミーデータで可）。
 
