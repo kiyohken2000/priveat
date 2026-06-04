@@ -1,0 +1,113 @@
+{
+  "expo": {
+    "name": "Priveat",
+    "slug": "Priveat",
+    "platforms": [
+      "ios",
+      "android"
+    ],
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/logo-sm.png",
+    "splash": {
+      "image": "./assets/images/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "newArchEnabled": true,
+    "updates": {
+      "enabled": true,
+      "fallbackToCacheTimeout": 10000,
+      "url": "https://u.expo.dev/6f40aecf-d277-4234-92cd-24d33578e1c8"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "net.votepurchase.priveat",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "食事や食品ラベルを撮影してカロリーを記録するためにカメラを使用します。",
+        "CFBundleDevelopmentRegion": "ja_JP",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "entitlements": {
+        "com.apple.developer.kernel.increased-memory-limit": true,
+        "com.apple.developer.kernel.extended-virtual-addressing": true
+      },
+      "userInterfaceStyle": "automatic"
+    },
+    "android": {
+      "package": "net.votepurchase.priveat",
+      "versionCode": 1,
+      "userInterfaceStyle": "automatic",
+      "permissions": [
+        "android.permission.VIBRATE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_MEDIA_IMAGES"
+      ]
+    },
+    "packagerOpts": {
+      "config": "metro.config.js",
+      "sourceExts": [
+        "js",
+        "jsx",
+        "svg",
+        "ts",
+        "tsx"
+      ]
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "plugins": [
+      "expo-font",
+      "expo-asset",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "食事の写真やスクリーンショットを選んで記録するために写真ライブラリにアクセスします。"
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "食事や食品ラベルを撮影してカロリーを記録するためにカメラを使用します。"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "17.0"
+          }
+        }
+      ],
+      "expo-sqlite",
+      [
+        "rn-mlkit-ocr",
+        {
+          "ocrModels": [
+            "latin",
+            "japanese"
+          ],
+          "ocrUseBundled": true
+        }
+      ],
+      [
+        "llama.rn",
+        {
+          "enableEntitlements": true
+        }
+      ],
+      "expo-web-browser"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "6f40aecf-d277-4234-92cd-24d33578e1c8"
+      }
+    }
+  }
+}
