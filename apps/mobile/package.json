@@ -37,6 +37,7 @@
     "expo-media-library": "~56.0.6",
     "expo-network": "~56.0.4",
     "expo-notifications": "~56.0.15",
+    "expo-splash-screen": "~56.0.10",
     "expo-sqlite": "~56.0.4",
     "expo-updates": "~56.0.17",
     "expo-web-browser": "~56.0.5",
