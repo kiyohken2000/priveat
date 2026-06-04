@@ -22,8 +22,8 @@
 - [x] `expo-dev-client` を導入
 - [x] dev client をビルド（iOS / Android）
 - [x] 実機で dev client が起動することを確認
-- [ ] 不要なボイラープレート要素（サンプル画面・サインイン等）を整理
-- [ ] タブ構成を「チャット / ホーム / 履歴 / 設定」に変更
+- [x] 不要なボイラープレート要素（サンプル画面・サインイン等）を整理
+- [x] タブ構成を「チャット / ホーム / 履歴 / 設定」に変更
 
 > 補足: 依存パッケージと app.json のプラグイン（expo-image-picker / expo-camera / expo-sqlite / rn-mlkit-ocr / llama.rn）は導入済み。残りの app.json 修正点は末尾「app.json 残設定」を参照。
 
@@ -35,10 +35,10 @@
 
 - [x] react-native-executorch を導入（主推論エンジン。＋expo-resource-fetcher）
 - [x] llama.rn を予備として保持（app.json に `["llama.rn", { "enableEntitlements": true }]` 設定済み）
-- [ ] .pte モデルを1つ用意（例: Qwen2.5-1.5B / Qwen3。Software Mansion の HF 配布版）
-- [ ] モデルの初回ダウンロード処理（resource fetcher / 進捗UI）
-- [ ] `useLLM` でモデルをロード（`isReady` / `downloadProgress` を確認）
-- [ ] 任意のプロンプトで `generate` の応答が返ることを確認（iOS / Android）
+- [x] .pte モデルを1つ用意（Qwen3-0.6B 量子化版を選択）
+- [x] モデルの初回ダウンロード処理（resource fetcher / 進捗UI）
+- [x] `useLLM` でモデルをロード（`isReady` / `downloadProgress` を確認）
+- [x] 任意のプロンプトで `generate` の応答が返ることを確認（iOS / Android）
 - [ ] 生成速度・メモリを実機で計測（端末別）
 
 **DoD**: 実機でモデルをロードし、テキスト補完が返ってくる。
@@ -169,10 +169,11 @@
 
 主要設定（newArchEnabled / dev client / expo-image-picker / expo-camera / expo-sqlite / rn-mlkit-ocr / llama.rn プラグイン、各説明文の日本語化、Androidカメラ権限の重複解消）は対応済み。残り:
 
-- [ ] iOS `NSPhotoLibraryUsageDescription` の文言修正（現在カメラ用途の文言が写真ライブラリのキーに入っている）。expo-image-picker の `photosPermission` と重複しないよう一本化（プラグイン側に寄せる）
+- [x] iOS `NSPhotoLibraryUsageDescription` の文言修正（expo-image-picker プラグインの `photosPermission` に一本化）
+- [x] `splash` を `expo-splash-screen` プラグインに移行、`newArchEnabled` / `packagerOpts` を削除（SDK 52+ スキーマ準拠）
+- [x] Android `RECORD_AUDIO` 削除（音声入力は計画外）
 - [ ] react-native-executorch を主軸（テキスト・コーチング・VLM）、llama.rn を予備（GBNFフォールバック）として確定済み。両方を意図的に保持。MVPで llama.rn 不使用が確実ならサイズ削減目的で一時的に外す判断のみ検討
 - [ ] axios（^0.21.2, 既知の脆弱性）を fetch に置換 or 1.x へ更新
-- [ ] Android `RECORD_AUDIO`: 音声入力を実装しないなら削除
 - [ ] package.json の `"eject"` スクリプト（廃止コマンド）を削除
 - [ ] （フェーズ6）HealthKit / Health Connect の権限・entitlement・説明文を追加（フェーズ6の項目参照）
 
