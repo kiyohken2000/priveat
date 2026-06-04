@@ -12,3 +12,6 @@ web-report/
 *.idea
 *.DS_Store
 dist
+
+# ビルドスクリプト用のローカルデータ（大きい・公式から取得）
+scripts/data/

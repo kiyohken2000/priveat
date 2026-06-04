@@ -8,10 +8,13 @@ import {
 } from 'react-native'
 import { Bubble, GiftedChat, InputToolbar } from 'react-native-gifted-chat'
 import { QWEN3_0_6B_QUANTIZED, useLLM } from 'react-native-executorch'
+import * as Haptics from 'expo-haptics'
 import ScreenTemplate from '../../components/ScreenTemplate'
 import { colors, fontSize } from '../../theme'
 import FoodCard from './FoodCard'
 import { getFoodSchemaPrompt, normalizePortion, parseFoodOutput } from './schema'
+import { computeKcalFromMatch, findBestFood } from '../../db/search'
+import { countFoodLog, insertFoodLogItems } from '../../db/foodLog'
 
 const USER = { _id: 1 }
 const ASSISTANT = { _id: 2, name: 'AI' }
@@ -76,18 +79,30 @@ const makeUserMessage = (text) => {
   }
 }
 
-const parseAssistantContent = (content, idx) => {
+const parseAndEnrich = async (content, idx) => {
   try {
     const parsed = parseFoodOutput(content)
-    return {
-      foodItems: parsed.items.map((it, j) => ({
-        id: `${idx}-${j}`,
-        name: it.name,
-        quantity: it.quantity,
-        unit: it.unit,
-        portion: normalizePortion(it.portion),
-      })),
-    }
+    const enriched = await Promise.all(
+      parsed.items.map(async (it, j) => {
+        const matched = await findBestFood(it.name).catch((err) => {
+          console.warn('[db] search failed for', it.name, err)
+          return null
+        })
+        const computedKcal = computeKcalFromMatch(matched, it.quantity, it.unit, it.name)
+        return {
+          id: `${idx}-${j}`,
+          name: it.name,
+          quantity: it.quantity,
+          unit: it.unit,
+          portion: normalizePortion(it.portion),
+          baseKcal: computedKcal,
+          matchedName: matched?.name ?? null,
+          matchedFoodCode: matched?.food_code ?? null,
+          matchedFoodId: matched?.id ?? null,
+        }
+      }),
+    )
+    return { foodItems: enriched }
   } catch (e) {
     return { error: e?.message ?? String(e) }
   }
@@ -111,28 +126,42 @@ export default function Chat() {
   }, [llm.isReady])
 
   // Parse any complete assistant messages that haven't been parsed yet
+  // (uses processedRef to guard against re-processing in the async window)
+  const processedRef = useRef(new Set())
   useEffect(() => {
     if (llm.isGenerating) return
-    setLlmCards((prev) => {
-      let updated = prev
-      const base = llm.messageHistory.filter((m) => m.role !== 'system')
-      base.forEach((m, idx) => {
-        if (m.role === 'assistant' && !updated[idx]) {
-          const userMsg = base[idx - 1]?.content
-          console.log('========== Chat log ==========')
-          if (userMsg) console.log('[USER]', userMsg)
-          console.log('[LLM raw]', m.content)
-          const result = parseAssistantContent(m.content, idx)
-          if (result.foodItems) {
-            console.log('[parsed items]', JSON.stringify(result.foodItems, null, 2))
-          } else {
-            console.log('[parse error]', result.error)
+    const base = llm.messageHistory.filter((m) => m.role !== 'system')
+    base.forEach((m, idx) => {
+      if (m.role !== 'assistant') return
+      if (processedRef.current.has(idx)) return
+      processedRef.current.add(idx)
+      ;(async () => {
+        const userMsg = base[idx - 1]?.content
+        console.log('========== Chat log ==========')
+        if (userMsg) console.log('[USER]', userMsg)
+        console.log('[LLM raw]', m.content)
+        const result = await parseAndEnrich(m.content, idx)
+        if (result.foodItems) {
+          console.log('[parsed+enriched]', JSON.stringify(result.foodItems, null, 2))
+          try {
+            const insertedIds = await insertFoodLogItems(result.foodItems)
+            const total = await countFoodLog()
+            console.log(`[food_log] inserted ${insertedIds.length} rows (total ${total})`, insertedIds)
+          } catch (e) {
+            console.warn('[food_log] insert failed:', e?.message ?? e)
           }
-          console.log('==============================')
-          updated = { ...updated, [idx]: result }
+        } else {
+          console.log('[parse error]', result.error)
         }
-      })
-      return updated
+        console.log('==============================')
+        setLlmCards((prev) => ({ ...prev, [idx]: result }))
+        // AI 応答が画面に出るタイミングでハプティック。成功 / 失敗で振動を出し分け。
+        Haptics.notificationAsync(
+          result.error
+            ? Haptics.NotificationFeedbackType.Warning
+            : Haptics.NotificationFeedbackType.Success,
+        ).catch(() => {})
+      })()
     })
   }, [llm.messageHistory, llm.isGenerating])
 

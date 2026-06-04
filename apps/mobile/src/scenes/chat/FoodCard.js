@@ -42,6 +42,11 @@ export default function FoodCard({ message, onUpdateItem, title }) {
                 {item.quantity}
                 {item.unit} · {kcal == null ? '— kcal' : `${kcal} kcal`}
               </Text>
+              {item.matchedName ? (
+                <Text style={styles.matched} numberOfLines={1}>
+                  ※ {item.matchedName}
+                </Text>
+              ) : null}
             </View>
             <TouchableOpacity
               style={styles.portionPill}
@@ -101,6 +106,12 @@ const styles = StyleSheet.create({
     fontSize: fontSize.small,
     color: colors.gray,
     marginTop: 2,
+  },
+  matched: {
+    fontSize: fontSize.small,
+    color: colors.darkPurple,
+    marginTop: 2,
+    opacity: 0.7,
   },
   portionPill: {
     paddingHorizontal: 10,

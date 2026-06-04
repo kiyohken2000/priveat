@@ -79,14 +79,16 @@
 
 ## フェーズ4: 食品DB（成分表）と集計
 
-- [ ] 文科省 成分表（八訂・増補2023）Excel を取得
-- [ ] Excel → SQLite 変換スクリプト（ビルド時／同梱用）
-- [ ] `expo-sqlite` に成分表を同梱・読込
-- [ ] あいまい一致検索（FTS5 or 正規化＋編集距離）
-- [ ] 候補が複数/不一致のときカード上でユーザーに選択させる
-- [ ] 数量を掛けてカロリー・栄養素を算出
-- [ ] `food_log` への保存
-- [ ] 出典表記の実装（「日本食品標準成分表（八訂）増補2023年から引用」）
+- [x] 文科省 成分表（八訂・増補2023）Excel を取得（ユーザーが手動 DL → `apps/mobile/scripts/data/`）
+- [x] Excel → SQLite 変換スクリプト（`scripts/build-foods-json.js`。成分識別子 ENERC_KCAL/PROT-/FAT-/CHOCDF-/NACL_EQ で安定マッピング、2,538食品を JSON 化）
+- [x] `expo-sqlite` に成分表を同梱・読込（初回起動時に `assets/data/foods.json` を foods テーブルへ一括 INSERT。進捗UI付き）
+- [x] あいまい一致検索（正規化 + LIKE。完全→前方→部分でスコア付け。FTS5 は今後）
+- [x] エイリアス辞書（`src/data/foodAliases.js`、~60エントリ）と単位→グラム換算（`src/data/portionWeights.js`、~35食品）を追加
+- [ ] 候補が複数/不一致のときカード上でユーザーに選択させる → 任意、後段
+- [x] 数量を掛けてカロリー算出（g 直接 + portionWeights 経由）
+- [x] `food_log` への保存（portion factor を適用、ref_food_id で foods 紐付け、source='text_llm'）
+- [ ] 出典表記の実装（「日本食品標準成分表（八訂）増補2023年から引用」）→ フェーズ10 仕上げで対応
+- [x] AI 応答時にハプティックフィードバック（成功=Success、失敗=Warning）
 
 **DoD**: 文章入力 → 食品DB照合 → 正しいカロリーがカードに出て、ログに保存される。
 

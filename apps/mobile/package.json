@@ -7,7 +7,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "node_modules/.bin/eslint src/ --fix src/ --fix",
-    "test": "node_modules/.bin/jest --passWithNoTests"
+    "test": "node_modules/.bin/jest --passWithNoTests",
+    "build-foods": "node scripts/build-foods-json.js"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
@@ -98,7 +99,8 @@
     "lint-staged": "^10.2.0",
     "prettier": "^2.0.5",
     "pretty-quick": "^2.0.1",
-    "react-test-renderer": "^16.13.1"
+    "react-test-renderer": "^16.13.1",
+    "xlsx": "^0.18.5"
   },
   "prettier": {
     "trailingComma": "all",
