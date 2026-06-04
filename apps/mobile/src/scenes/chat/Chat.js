@@ -1,18 +1,18 @@
-import React, { useRef, useState, useEffect } from 'react'
+import React, { useEffect, useMemo } from 'react'
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from 'react-native'
+import { GiftedChat, InputToolbar } from 'react-native-gifted-chat'
 import { useLLM, QWEN3_0_6B_QUANTIZED } from 'react-native-executorch'
 import ScreenTemplate from '../../components/ScreenTemplate'
 import { colors, fontSize } from '../../theme'
+
+const USER = { _id: 1 }
+const ASSISTANT = { _id: 2, name: 'AI' }
 
 const SYSTEM_PROMPT = `あなたは日本語で簡潔に答えるアシスタントです。
 推論プロセスは出力せず、答えだけを返してください。
@@ -28,8 +28,6 @@ const stripThink = (text) => {
 
 export default function Chat() {
   const llm = useLLM({ model: QWEN3_0_6B_QUANTIZED })
-  const [input, setInput] = useState('')
-  const scrollRef = useRef(null)
 
   useEffect(() => {
     if (llm.isReady) {
@@ -38,15 +36,35 @@ export default function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [llm.isReady])
 
-  useEffect(() => {
-    scrollRef.current?.scrollToEnd({ animated: true })
-  }, [llm.messageHistory.length, llm.response])
+  const messages = useMemo(() => {
+    const items = []
+    const now = Date.now()
+    const base = llm.messageHistory.filter((m) => m.role !== 'system')
+    base.forEach((m, i) => {
+      items.push({
+        _id: `h-${i}`,
+        text: m.role === 'assistant' ? stripThink(m.content) : m.content,
+        createdAt: new Date(now - (base.length - i) * 1000),
+        user: m.role === 'user' ? USER : ASSISTANT,
+      })
+    })
+    if (llm.isGenerating) {
+      const streamed = stripThink(llm.response)
+      if (streamed) {
+        items.push({
+          _id: 'streaming',
+          text: streamed,
+          createdAt: new Date(now),
+          user: ASSISTANT,
+        })
+      }
+    }
+    return items.reverse()
+  }, [llm.messageHistory, llm.response, llm.isGenerating])
 
-  const onSend = () => {
-    const text = input.trim()
-    if (!text || !llm.isReady || llm.isGenerating) return
-    setInput('')
-    llm.sendMessage(text)
+  const onSend = (sent) => {
+    if (!sent.length || !llm.isReady || llm.isGenerating) return
+    llm.sendMessage(sent[0].text)
   }
 
   if (llm.error) {
@@ -54,7 +72,9 @@ export default function Chat() {
       <ScreenTemplate>
         <View style={styles.center}>
           <Text style={styles.title}>エラー</Text>
-          <Text style={styles.errorText}>{String(llm.error.message ?? llm.error)}</Text>
+          <Text style={styles.errorText}>
+            {String(llm.error.message ?? llm.error)}
+          </Text>
         </View>
       </ScreenTemplate>
     )
@@ -78,77 +98,33 @@ export default function Chat() {
   }
 
   return (
-    <ScreenTemplate>
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}
-      >
-        <ScrollView
-          ref={scrollRef}
-          style={styles.flex}
-          contentContainerStyle={styles.messages}
-        >
-          {llm.messageHistory.length === 0 && !llm.isGenerating && (
-            <Text style={styles.placeholder}>
-              プロンプトを送ってモデルの応答を確認します。
-            </Text>
-          )}
-          {llm.messageHistory.map((m, i) => (
-            <View
-              key={`${i}-${m.role}`}
-              style={[
-                styles.bubble,
-                m.role === 'user' ? styles.userBubble : styles.assistantBubble,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.bubbleText,
-                  m.role === 'user' && styles.userBubbleText,
-                ]}
-              >
-                {m.role === 'assistant' ? stripThink(m.content) : m.content}
-              </Text>
-            </View>
-          ))}
-          {llm.isGenerating && (
-            <View style={[styles.bubble, styles.assistantBubble]}>
-              <Text style={styles.bubbleText}>{stripThink(llm.response) || '考え中…'}</Text>
-            </View>
-          )}
-        </ScrollView>
-        <View style={styles.composer}>
-          <TextInput
-            style={styles.input}
-            value={input}
-            onChangeText={setInput}
-            placeholder="メッセージを入力"
-            placeholderTextColor={colors.gray}
-            editable={!llm.isGenerating}
-            multiline
+    <View style={styles.chatRoot}>
+      <StatusBar barStyle="dark-content" backgroundColor={colors.white} />
+      <GiftedChat
+        messages={messages}
+        onSend={onSend}
+        user={USER}
+        placeholder="メッセージを入力"
+        isTyping={llm.isGenerating && !llm.response}
+        minComposerHeight={48}
+        renderInputToolbar={(props) => (
+          <InputToolbar
+            {...props}
+            containerStyle={styles.inputToolbar}
           />
-          {llm.isGenerating ? (
-            <TouchableOpacity style={styles.stopButton} onPress={llm.interrupt}>
-              <Text style={styles.sendLabel}>停止</Text>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity
-              style={[styles.sendButton, !input.trim() && styles.sendDisabled]}
-              onPress={onSend}
-              disabled={!input.trim()}
-            >
-              <Text style={styles.sendLabel}>送信</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      </KeyboardAvoidingView>
-    </ScreenTemplate>
+        )}
+        textInputProps={{
+          editable: !llm.isGenerating,
+          placeholderTextColor: colors.gray,
+          style: styles.textInput,
+        }}
+        alwaysShowSend
+      />
+    </View>
   )
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
   center: {
     flex: 1,
     alignItems: 'center',
@@ -177,76 +153,17 @@ const styles = StyleSheet.create({
     color: colors.redPrimary,
     textAlign: 'center',
   },
-  messages: {
-    padding: 16,
-    paddingBottom: 24,
-  },
-  placeholder: {
-    fontSize: fontSize.middle,
-    color: colors.gray,
-    textAlign: 'center',
-    marginTop: 24,
-  },
-  bubble: {
-    maxWidth: '85%',
-    padding: 12,
-    borderRadius: 16,
-    marginBottom: 8,
-  },
-  userBubble: {
-    alignSelf: 'flex-end',
-    backgroundColor: colors.lightPurple,
-  },
-  assistantBubble: {
-    alignSelf: 'flex-start',
-    backgroundColor: colors.graySixth,
-  },
-  bubbleText: {
-    fontSize: fontSize.middle,
-    color: colors.black,
-  },
-  userBubbleText: {
-    color: colors.white,
-  },
-  composer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    padding: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.grayFifth,
+  chatRoot: {
+    flex: 1,
     backgroundColor: colors.white,
   },
-  input: {
-    flex: 1,
-    minHeight: 40,
-    maxHeight: 120,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: fontSize.middle,
+  inputToolbar: {
+    backgroundColor: colors.white,
+    borderTopColor: colors.grayFifth,
+  },
+  textInput: {
     color: colors.black,
-    backgroundColor: colors.graySixth,
-    borderRadius: 20,
-  },
-  sendButton: {
-    marginLeft: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-    backgroundColor: colors.darkPurple,
-  },
-  sendDisabled: {
-    backgroundColor: colors.grayFourth,
-  },
-  stopButton: {
-    marginLeft: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-    backgroundColor: colors.redSecondary,
-  },
-  sendLabel: {
-    color: colors.white,
+    backgroundColor: colors.white,
     fontSize: fontSize.middle,
-    fontWeight: '600',
   },
 })

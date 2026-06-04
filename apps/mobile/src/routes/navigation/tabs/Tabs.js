@@ -18,6 +18,7 @@ export default function TabNavigator() {
         headerShown: false,
         tabBarActiveTintColor: colors.lightPurple,
         tabBarInactiveTintColor: colors.gray,
+        tabBarHideOnKeyboard: true,
       }}
       initialRouteName="ChatTab"
     >
