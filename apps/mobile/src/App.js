@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
 import { Provider } from 'react-redux'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
+import { ActionSheetProvider } from '@expo/react-native-action-sheet'
 import { initExecutorch } from 'react-native-executorch'
 import { ExpoResourceFetcher } from 'react-native-executorch-expo-resource-fetcher'
 import store from 'utils/store'
@@ -61,9 +62,11 @@ export default function App() {
   }
   return (
     <SafeAreaProvider>
-      <Provider store={store}>
-        <Router />
-      </Provider>
+      <ActionSheetProvider>
+        <Provider store={store}>
+          <Router />
+        </Provider>
+      </ActionSheetProvider>
     </SafeAreaProvider>
   )
 }

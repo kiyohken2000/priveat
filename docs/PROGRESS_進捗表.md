@@ -97,12 +97,16 @@
 ## フェーズ5: OCR（ラベル・スクショ）
 
 - [x] OCRライブラリ導入（rn-mlkit-ocr。app.json で `ocrModels: ["latin","japanese"]` 設定済み）
-- [x] 画像入力（expo-camera 撮影 / expo-image-picker ギャラリー選択）導入
-- [ ] 画像URI → rn-mlkit-ocr で文字認識する共通処理（撮影・スクショ両対応）
-- [ ] 食品ラベルの栄養成分表示パーサー（エネルギー/たんぱく質/脂質/炭水化物/食塩）
-- [ ] 読取結果を `products` にキャッシュ
-- [ ] フィットネスアプリのスクショから消費カロリー/体重/歩数を抽出
-- [ ] OCR失敗時の手入力フォールバック
+- [x] 画像入力（expo-image-picker のカメラ/ライブラリ。Composer Actions の📷アイコン + ActionSheet）
+- [x] 画像URI → rn-mlkit-ocr で文字認識する共通処理（`scenes/chat/imageOcr.js`、撮影・スクショ両対応）
+- [x] 食品ラベルの栄養成分表示パーサー（`ocrParsers.js: parseLabelText`、g↔8 誤読・末尾消失に対応）
+- [x] 読取結果を `products` にキャッシュ（`source='label_ocr'`）
+- [x] フィットネスアプリのスクショから消費カロリー/距離/歩数を抽出 → `energy_log`
+- [x] 体重スクショから複数行を抽出、最新値を `weight_log` に保存（仕様外だが追加対応）
+- [x] OCR種別の自動振り分け（label/weight/fitness/unknown のルーター。kcal の大小文字で label と fitness を区別）
+- [x] Composer Actions の📷ボタン（フェーズ2 から繰り越し、OCR と一緒に実装）
+- [ ] OCR失敗時の手入力フォールバック → 任意、後段（現状は振り分け失敗時に生テキストを表示する暫定 fallback）
+- [x] AI 応答時のハプティック（成功=Success、失敗=Warning）OCR 経路にも適用
 
 **DoD**: ラベル写真から栄養成分が、スクショから消費カロリー・体重が読み取れる。
 

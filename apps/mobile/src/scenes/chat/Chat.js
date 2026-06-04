@@ -4,17 +4,23 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native'
 import { Bubble, GiftedChat, InputToolbar } from 'react-native-gifted-chat'
 import { QWEN3_0_6B_QUANTIZED, useLLM } from 'react-native-executorch'
 import * as Haptics from 'expo-haptics'
+import { useActionSheet } from '@expo/react-native-action-sheet'
+import FontIcon from 'react-native-vector-icons/FontAwesome'
 import ScreenTemplate from '../../components/ScreenTemplate'
 import { colors, fontSize } from '../../theme'
 import FoodCard from './FoodCard'
 import { getFoodSchemaPrompt, normalizePortion, parseFoodOutput } from './schema'
 import { computeKcalFromMatch, findBestFood } from '../../db/search'
 import { countFoodLog, insertFoodLogItems } from '../../db/foodLog'
+import { captureFromCamera, pickFromLibrary, runOcr } from './imageOcr'
+import { detectAndParse } from './ocrParsers'
+import { insertEnergyFromFitness, insertProductFromLabel, insertWeightFromOcr } from '../../db/ocrLogs'
 
 const USER = { _id: 1 }
 const ASSISTANT = { _id: 2, name: 'AI' }
@@ -79,6 +85,58 @@ const makeUserMessage = (text) => {
   }
 }
 
+const makeUserImageMessage = (uri) => {
+  const stamp = Date.now()
+  return {
+    _id: `local-img-${stamp}`,
+    text: '',
+    image: uri,
+    createdAt: new Date(stamp),
+    user: USER,
+  }
+}
+
+const makeOcrResultMessage = (text) => {
+  const stamp = Date.now()
+  return {
+    _id: `local-ocr-${stamp}`,
+    text: text && text.trim().length > 0 ? text : '（文字を検出できませんでした）',
+    createdAt: new Date(stamp + 1), // ensure it sorts after the image
+    user: ASSISTANT,
+    isOcrResult: true,
+  }
+}
+
+const formatLabelResult = (data, insertedId) => {
+  const lines = ['【ラベル読取】']
+  if (data.kcal != null) lines.push(`エネルギー  ${data.kcal} kcal`)
+  if (data.protein != null) lines.push(`たんぱく質  ${data.protein} g`)
+  if (data.fat != null) lines.push(`脂質        ${data.fat} g`)
+  if (data.carb != null) lines.push(`炭水化物    ${data.carb} g`)
+  if (data.salt != null) lines.push(`食塩相当量  ${data.salt} g`)
+  lines.push(`→ products に保存しました (#${insertedId})`)
+  return lines.join('\n')
+}
+
+const formatFitnessResult = (data, insertedId) => {
+  const lines = ['【フィットネス読取】']
+  if (data.activeKcal != null) lines.push(`消費カロリー  ${data.activeKcal} kcal`)
+  if (data.steps != null) lines.push(`歩数          ${data.steps.toLocaleString()}`)
+  if (data.distance != null) lines.push(`距離          ${data.distance} km`)
+  lines.push(`→ energy_log に保存しました (#${insertedId})`)
+  return lines.join('\n')
+}
+
+const formatWeightResult = (data, insertedId) => {
+  const lines = ['【体重読取】']
+  lines.push(`最新  ${data.latest} kg`)
+  if (data.weights.length > 1) {
+    lines.push(`履歴  ${data.weights.slice(0, 8).map((w) => `${w}`).join(' / ')}${data.weights.length > 8 ? ' ...' : ''} kg`)
+  }
+  lines.push(`→ weight_log に保存しました (#${insertedId})`)
+  return lines.join('\n')
+}
+
 const parseAndEnrich = async (content, idx) => {
   try {
     const parsed = parseFoodOutput(content)
@@ -112,7 +170,9 @@ export default function Chat() {
   const llm = useLLM({ model: QWEN3_0_6B_QUANTIZED })
   const [localMessages, setLocalMessages] = useState([])
   const [llmCards, setLlmCards] = useState({}) // { historyIndex: { foodItems? | error? } }
+  const [ocrBusy, setOcrBusy] = useState(false)
   const llmTimestampsRef = useRef([])
+  const { showActionSheetWithOptions } = useActionSheet()
 
   // Configure LLM as a structured-output parser once it's ready
   useEffect(() => {
@@ -217,6 +277,87 @@ export default function Chat() {
       llm.sendMessage(text)
     },
     [llm],
+  )
+
+  // 画像 → OCR → 振り分け → 保存 → 結果表示 の共通ハンドラ。
+  const handleImage = useCallback(async (picker) => {
+    if (ocrBusy) return
+    try {
+      const uri = await picker()
+      if (!uri) return
+      setOcrBusy(true)
+      setLocalMessages((prev) => [...prev, makeUserImageMessage(uri)])
+      console.log('========== OCR ==========')
+      console.log('[image]', uri)
+      const ocr = await runOcr(uri)
+      const rawText = ocr?.text ?? ''
+      console.log('[ocr text]', rawText)
+      const parsed = detectAndParse(rawText)
+      console.log('[ocr parsed]', parsed)
+
+      let resultText
+      if (parsed.kind === 'label') {
+        const id = await insertProductFromLabel(parsed)
+        resultText = formatLabelResult(parsed, id)
+      } else if (parsed.kind === 'fitness') {
+        const id = await insertEnergyFromFitness(parsed)
+        resultText = formatFitnessResult(parsed, id)
+      } else if (parsed.kind === 'weight') {
+        const id = await insertWeightFromOcr(parsed)
+        resultText = formatWeightResult(parsed, id)
+      } else {
+        // 振り分け失敗時は生テキストをそのまま表示（手入力フォールバックの足がかり）
+        resultText = `判定できませんでした。読み取った全文:\n\n${rawText.slice(0, 500)}`
+      }
+      console.log('=========================')
+
+      setLocalMessages((prev) => [...prev, makeOcrResultMessage(resultText)])
+      Haptics.notificationAsync(
+        parsed.kind === 'unknown'
+          ? Haptics.NotificationFeedbackType.Warning
+          : Haptics.NotificationFeedbackType.Success,
+      ).catch(() => {})
+    } catch (e) {
+      console.warn('[ocr] failed:', e?.message ?? e)
+      setLocalMessages((prev) => [
+        ...prev,
+        makeOcrResultMessage(`エラー: ${e?.message ?? e}`),
+      ])
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {})
+    } finally {
+      setOcrBusy(false)
+    }
+  }, [ocrBusy])
+
+  const onPressAttach = useCallback(() => {
+    if (ocrBusy) return
+    const options = ['カメラで撮影', 'ライブラリから選択', 'キャンセル']
+    const cancelButtonIndex = 2
+    showActionSheetWithOptions(
+      { options, cancelButtonIndex, title: '画像を読み取る' },
+      (selectedIndex) => {
+        if (selectedIndex === 0) handleImage(captureFromCamera)
+        else if (selectedIndex === 1) handleImage(pickFromLibrary)
+      },
+    )
+  }, [showActionSheetWithOptions, handleImage, ocrBusy])
+
+  const renderActions = useCallback(
+    () => (
+      <TouchableOpacity
+        style={styles.attachButton}
+        onPress={onPressAttach}
+        disabled={ocrBusy}
+        activeOpacity={0.7}
+      >
+        {ocrBusy ? (
+          <ActivityIndicator size="small" color={colors.lightPurple} />
+        ) : (
+          <FontIcon name="camera" size={22} color={colors.lightPurple} />
+        )}
+      </TouchableOpacity>
+    ),
+    [onPressAttach, ocrBusy],
   )
 
   const updateFoodItem = useCallback((messageId, itemId, updates) => {
@@ -337,6 +478,7 @@ export default function Chat() {
         isTyping={llm.isGenerating}
         minComposerHeight={48}
         renderBubble={renderBubble}
+        renderActions={renderActions}
         renderAvatar={null}
         renderChatEmpty={renderChatEmpty}
         renderInputToolbar={(props) => (
@@ -392,6 +534,12 @@ const styles = StyleSheet.create({
   inputToolbar: {
     backgroundColor: colors.white,
     borderTopColor: colors.grayFifth,
+  },
+  attachButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   textInput: {
     color: colors.black,
