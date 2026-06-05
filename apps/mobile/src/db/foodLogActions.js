@@ -62,19 +62,25 @@ export const getDaySummary = async (date) => {
   }
 }
 
-// 指定日の PFC を算出（home.js の getTodayMacros の date 指定版）。
+// 指定日の PFC を算出 (home.js の getTodayMacros の date 指定版、同じ COALESCE 優先順位)。
 export const getDayMacros = async (date) => {
   const db = getDb()
   const row = await db.getFirstAsync(
     `SELECT
        COALESCE(SUM(fl.kcal), 0) AS totalKcal,
-       COALESCE(SUM(CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
-                         THEN fl.kcal * f.protein_per_100g / f.kcal_per_100g END), 0) AS protein,
-       COALESCE(SUM(CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
-                         THEN fl.kcal * f.fat_per_100g     / f.kcal_per_100g END), 0) AS fat,
-       COALESCE(SUM(CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
-                         THEN fl.kcal * f.carb_per_100g    / f.kcal_per_100g END), 0) AS carb,
-       COALESCE(SUM(CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
+       COALESCE(SUM(COALESCE(fl.protein,
+                             CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
+                                  THEN fl.kcal * f.protein_per_100g / f.kcal_per_100g END)), 0) AS protein,
+       COALESCE(SUM(COALESCE(fl.fat,
+                             CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
+                                  THEN fl.kcal * f.fat_per_100g / f.kcal_per_100g END)), 0) AS fat,
+       COALESCE(SUM(COALESCE(fl.carb,
+                             CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
+                                  THEN fl.kcal * f.carb_per_100g / f.kcal_per_100g END)), 0) AS carb,
+       COALESCE(SUM(CASE WHEN fl.protein IS NOT NULL
+                          OR fl.fat IS NOT NULL
+                          OR fl.carb IS NOT NULL
+                          OR (f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL)
                          THEN fl.kcal END), 0) AS matchedKcal
        FROM food_log fl
        LEFT JOIN foods f ON fl.ref_food_id = f.id AND fl.ref_kind = 'food'

@@ -37,22 +37,26 @@ export const getTodayEnergy = async () => {
 }
 
 // 今日の食事ログから PFC を算出。
-//   food_log の kcal と foods テーブルの *_per_100g 比から逆算する方式。
-//   (kcal を介して grams を計算する分母にしているので別途 grams 列を持たなくて良い)
-//   ref_food_id が無い行 (ラベル OCR や未マッチ) は栄養素 0 として計上、
-//   matchedKcal で「栄養素データが取れた割合」を返す。
+//   優先順位: food_log の直接列 (label OCR が書き込む) > foods JOIN から kcal 比で逆算 (text LLM)。
+//   どちらも取れない行は栄養素ゼロ扱い。matchedKcal で「データが取れた割合」を返す。
 export const getTodayMacros = async () => {
   const db = getDb()
   const row = await db.getFirstAsync(
     `SELECT
        COALESCE(SUM(fl.kcal), 0) AS totalKcal,
-       COALESCE(SUM(CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
-                         THEN fl.kcal * f.protein_per_100g / f.kcal_per_100g END), 0) AS protein,
-       COALESCE(SUM(CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
-                         THEN fl.kcal * f.fat_per_100g     / f.kcal_per_100g END), 0) AS fat,
-       COALESCE(SUM(CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
-                         THEN fl.kcal * f.carb_per_100g    / f.kcal_per_100g END), 0) AS carb,
-       COALESCE(SUM(CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
+       COALESCE(SUM(COALESCE(fl.protein,
+                             CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
+                                  THEN fl.kcal * f.protein_per_100g / f.kcal_per_100g END)), 0) AS protein,
+       COALESCE(SUM(COALESCE(fl.fat,
+                             CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
+                                  THEN fl.kcal * f.fat_per_100g / f.kcal_per_100g END)), 0) AS fat,
+       COALESCE(SUM(COALESCE(fl.carb,
+                             CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
+                                  THEN fl.kcal * f.carb_per_100g / f.kcal_per_100g END)), 0) AS carb,
+       COALESCE(SUM(CASE WHEN fl.protein IS NOT NULL
+                          OR fl.fat IS NOT NULL
+                          OR fl.carb IS NOT NULL
+                          OR (f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL)
                          THEN fl.kcal END), 0) AS matchedKcal
        FROM food_log fl
        LEFT JOIN foods f ON fl.ref_food_id = f.id AND fl.ref_kind = 'food'

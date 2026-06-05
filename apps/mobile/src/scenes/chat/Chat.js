@@ -23,11 +23,12 @@ import { colors, fontSize } from '../../theme'
 import FoodCard from './FoodCard'
 import { getFoodSchemaPrompt, normalizePortion, parseFoodOutput } from './schema'
 import { computeKcalFromMatch, findBestFood } from '../../db/search'
-import { countFoodLog, insertFoodLogItems } from '../../db/foodLog'
+import { countFoodLog, insertFoodLogFromLabel, insertFoodLogItems } from '../../db/foodLog'
 import { insertCoachExchange } from '../../db/chatMessages'
 import { captureFromCamera, pickFromLibrary, runOcr } from './imageOcr'
 import { detectAndParse } from './ocrParsers'
 import { insertEnergyFromFitness, insertProductFromLabel, insertWeightFromOcr } from '../../db/ocrLogs'
+import LabelRecordCard from './LabelRecordCard'
 
 const USER = { _id: 1 }
 const ASSISTANT = { _id: 2, name: 'AI' }
@@ -181,15 +182,26 @@ const makeOcrResultMessage = (text) => {
   }
 }
 
-const formatLabelResult = (data, insertedId) => {
-  const lines = ['【ラベル読取】']
-  if (data.kcal != null) lines.push(`エネルギー  ${data.kcal} kcal`)
-  if (data.protein != null) lines.push(`たんぱく質  ${data.protein} g`)
-  if (data.fat != null) lines.push(`脂質        ${data.fat} g`)
-  if (data.carb != null) lines.push(`炭水化物    ${data.carb} g`)
-  if (data.salt != null) lines.push(`食塩相当量  ${data.salt} g`)
-  lines.push(`→ products に保存しました (#${insertedId})`)
-  return lines.join('\n')
+// ラベル OCR の結果は LabelRecordCard で表示するため、IMessage にラベル情報を載せる。
+//   products には先に保存済み (productId が振られている)、food_log への登録はユーザー入力待ち。
+const makeLabelRecordMessage = (productId, ocrData) => {
+  const stamp = Date.now()
+  return {
+    _id: `local-label-${stamp}`,
+    text: '',
+    createdAt: new Date(stamp + 1),
+    user: ASSISTANT,
+    labelRecord: {
+      productId,
+      perUnit: {
+        kcal: ocrData.kcal ?? null,
+        protein: ocrData.protein ?? null,
+        fat: ocrData.fat ?? null,
+        carb: ocrData.carb ?? null,
+        salt: ocrData.salt ?? null,
+      },
+    },
+  }
 }
 
 const formatFitnessResult = (data, insertedId) => {
@@ -548,11 +560,18 @@ export default function Chat() {
       const parsed = detectAndParse(rawText)
       console.log('[ocr parsed]', parsed)
 
-      let resultText
       if (parsed.kind === 'label') {
+        // ラベル: 食品名がラベルには無いことが多いのでカード型に出してユーザー入力を待つ。
+        // products には先に保存しておき、card 側で food_log INSERT 時に productId で紐付ける。
         const id = await insertProductFromLabel(parsed, { imageUri: uri })
-        resultText = formatLabelResult(parsed, id)
-      } else if (parsed.kind === 'fitness') {
+        console.log('=========================')
+        setLocalMessages((prev) => [...prev, makeLabelRecordMessage(id, parsed)])
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+        return
+      }
+
+      let resultText
+      if (parsed.kind === 'fitness') {
         const id = await insertEnergyFromFitness(parsed, { imageUri: uri })
         resultText = formatFitnessResult(parsed, id)
       } else if (parsed.kind === 'weight') {
@@ -643,6 +662,41 @@ export default function Chat() {
     }
   }, [])
 
+  // ラベル OCR カードの「食事として記録」ハンドラ。
+  //   productId / perUnit はカード側から渡してもらう (localMessages を依存にしない)。
+  const handleLabelSave = useCallback(
+    async (messageId, { name, quantity, unit, productId, perUnit }) => {
+      const id = await insertFoodLogFromLabel({
+        productId,
+        name,
+        quantity,
+        unit,
+        perUnit,
+      })
+      const totalKcal =
+        perUnit?.kcal != null ? Math.round(perUnit.kcal * quantity) : null
+      const summary = `${name} ${quantity}${unit}${
+        totalKcal != null ? ` · ${totalKcal} kcal` : ''
+      }`
+      setLocalMessages((prev) =>
+        prev.map((m) =>
+          m._id === messageId
+            ? {
+                ...m,
+                labelRecord: {
+                  ...m.labelRecord,
+                  savedFoodLogId: id,
+                  savedSummary: summary,
+                },
+              }
+            : m,
+        ),
+      )
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+    },
+    [],
+  )
+
   const renderBubble = useCallback(
     (props) => {
       const current = props.currentMessage
@@ -655,9 +709,12 @@ export default function Chat() {
           />
         )
       }
+      if (current?.labelRecord) {
+        return <LabelRecordCard message={current} onSave={handleLabelSave} />
+      }
       return <Bubble {...props} renderMessageText={renderAssistantMarkdown} />
     },
-    [updateFoodItem],
+    [updateFoodItem, handleLabelSave],
   )
 
   const renderChatEmpty = useCallback(
