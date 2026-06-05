@@ -24,6 +24,7 @@ import {
   downloadModel,
   listDownloadedModelIds,
 } from '../../services/modelStorage'
+import VlmModelTab from './VlmModelTab'
 
 const formatSize = (mb) => {
   if (mb >= 1000) return `${(mb / 1000).toFixed(1)} GB`
@@ -275,6 +276,12 @@ export default function ModelScreen() {
             : 'コーチ用: 重めのモデルで応答品質が上がります。'}
       </Text>
 
+      {selectedRole === 'vision' ? (
+        // vision タブは llama.rn 経路 (executorch とは別エンジン) なので、
+        // モデルカタログ / DL / 状態管理を専用コンポーネントに切り出してある。
+        <VlmModelTab />
+      ) : (
+        <>
       {statusLoading && (
         <View style={styles.statusBox}>
           <ActivityIndicator color={colors.lightPurple} />
@@ -466,6 +473,8 @@ export default function ModelScreen() {
         ※ いずれかのロールで使用中のモデルは削除できません。{'\n'}
         ※ tokenizer ファイルは同系列モデルで共通のため、削除しても残ります。
       </Text>
+        </>
+      )}
     </ScrollView>
   )
 }

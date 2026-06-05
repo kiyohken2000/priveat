@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { useLLM } from 'react-native-executorch'
 import { DEFAULT_MODEL_ID, LLM_MODELS, getModelById } from '../data/llmModels'
+import { DEFAULT_VLM_MODEL_ID, VLM_MODELS } from '../data/llmModelsVlm'
 
 // 「記録用 (parser)」「コーチ用 (coach)」「写真認識 (vision)」で別々のモデルを使う設計。
 //   - parser (記録用): 構造化出力。軽量モデルで十分（速度優先）
@@ -14,6 +15,10 @@ import { DEFAULT_MODEL_ID, LLM_MODELS, getModelById } from '../data/llmModels'
 const PARSER_KEY = '@priveat/active-parser-model-id'
 const COACH_KEY = '@priveat/active-coach-model-id'
 const VISION_KEY = '@priveat/active-vision-model-id'
+// llama.rn 経由の VLM 設定。executorch の vision ロールとは独立。
+// 切替方針の経緯は docs/PLAN_VLM_llama_rn.md を参照。
+const VLM_ENABLED_KEY = '@priveat/vlm-enabled'
+const VLM_MODEL_KEY = '@priveat/vlm-model-id'
 // 「現在ロード中（未完了）」の {role, modelId} を JSON で記録。
 // 起動時にこの値が残っていれば「前回のロードが完了せず終了した（OOM クラッシュ等）」
 // と判定し、該当ロールのみデフォルトに戻して fallback フラグを立てる。
@@ -24,6 +29,7 @@ const DEFAULT_COACH_MODEL_ID = 'qwen3-1.7b-q'
 const DEFAULT_VISION_MODEL_ID = 'lfm2.5-vl-450m-q'
 
 const isValidId = (id) => id && LLM_MODELS.some((m) => m.id === id)
+const isValidVlmId = (id) => id && VLM_MODELS.some((m) => m.id === id)
 
 const ROLES = ['parser', 'coach', 'vision']
 
@@ -59,6 +65,11 @@ const ModelContext = createContext({
   fellBack: null, // null | { role, fromId }
   dismissFellBack: () => {},
   isLoaded: false,
+  // ---- llama.rn 経由の VLM 設定 (executorch とは独立、orchestrator 経由でのみ起動) ----
+  vlmEnabled: false,
+  vlmModelId: DEFAULT_VLM_MODEL_ID,
+  setVlmEnabled: () => {},
+  setVlmModelId: () => {},
 })
 
 // ---- LLM インスタンス用 Context -------------------------------------------
@@ -73,22 +84,36 @@ export const ModelProvider = ({ children }) => {
   const [currentRole, setCurrentRoleState] = useState('parser')
   const [isLoaded, setIsLoaded] = useState(false)
   const [fellBack, setFellBack] = useState(null)
+  // llama.rn 経由の VLM 設定。常駐 LLM ではないので Provider への影響なし。
+  const [vlmEnabled, setVlmEnabledState] = useState(false)
+  const [vlmModelId, setVlmModelIdState] = useState(DEFAULT_VLM_MODEL_ID)
 
   // AsyncStorage から初期値を読み込み + 前回クラッシュ検出
   useEffect(() => {
     let cancelled = false
     const load = async () => {
       try {
-        const [storedParser, storedCoach, storedVision, pendingRaw] = await Promise.all([
+        const [
+          storedParser,
+          storedCoach,
+          storedVision,
+          pendingRaw,
+          storedVlmEnabled,
+          storedVlmModel,
+        ] = await Promise.all([
           AsyncStorage.getItem(PARSER_KEY),
           AsyncStorage.getItem(COACH_KEY),
           AsyncStorage.getItem(VISION_KEY),
           AsyncStorage.getItem(PENDING_LOAD_KEY),
+          AsyncStorage.getItem(VLM_ENABLED_KEY),
+          AsyncStorage.getItem(VLM_MODEL_KEY),
         ])
 
         let nextParserId = isValidId(storedParser) ? storedParser : DEFAULT_PARSER_MODEL_ID
         let nextCoachId = isValidId(storedCoach) ? storedCoach : DEFAULT_COACH_MODEL_ID
         let nextVisionId = isValidId(storedVision) ? storedVision : DEFAULT_VISION_MODEL_ID
+        const nextVlmEnabled = storedVlmEnabled === '1'
+        const nextVlmModelId = isValidVlmId(storedVlmModel) ? storedVlmModel : DEFAULT_VLM_MODEL_ID
 
         // pending 検出: 前回ロード未完了の role を default に戻す。
         // ただし fallback 後にデフォルトを再 pending するのを避けるため、
@@ -130,6 +155,8 @@ export const ModelProvider = ({ children }) => {
         setParserModelIdState(nextParserId)
         setCoachModelIdState(nextCoachId)
         setVisionModelIdState(nextVisionId)
+        setVlmEnabledState(nextVlmEnabled)
+        setVlmModelIdState(nextVlmModelId)
         setFellBack(fb)
       } catch (e) {
         console.warn('[modelContext] load failed:', e)
@@ -233,6 +260,26 @@ export const ModelProvider = ({ children }) => {
 
   const dismissFellBack = useCallback(() => setFellBack(null), [])
 
+  const setVlmEnabled = useCallback(async (next) => {
+    const b = !!next
+    setVlmEnabledState(b)
+    try {
+      await AsyncStorage.setItem(VLM_ENABLED_KEY, b ? '1' : '0')
+    } catch (e) {
+      console.warn('[modelContext] save vlmEnabled failed:', e)
+    }
+  }, [])
+
+  const setVlmModelId = useCallback(async (id) => {
+    if (!isValidVlmId(id)) return
+    setVlmModelIdState(id)
+    try {
+      await AsyncStorage.setItem(VLM_MODEL_KEY, id)
+    } catch (e) {
+      console.warn('[modelContext] save vlmModelId failed:', e)
+    }
+  }, [])
+
   const activeModelId =
     currentRole === 'coach' ? coachModelId
     : currentRole === 'vision' ? visionModelId
@@ -258,6 +305,10 @@ export const ModelProvider = ({ children }) => {
       fellBack,
       dismissFellBack,
       isLoaded,
+      vlmEnabled,
+      vlmModelId,
+      setVlmEnabled,
+      setVlmModelId,
     }),
     [
       parserModelId,
@@ -274,6 +325,10 @@ export const ModelProvider = ({ children }) => {
       fellBack,
       dismissFellBack,
       isLoaded,
+      vlmEnabled,
+      vlmModelId,
+      setVlmEnabled,
+      setVlmModelId,
     ],
   )
 
