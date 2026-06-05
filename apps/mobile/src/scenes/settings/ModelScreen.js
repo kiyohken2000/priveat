@@ -30,7 +30,14 @@ const formatSize = (mb) => {
   return `${mb} MB`
 }
 
-const roleLabel = (role) => (role === 'coach' ? 'コーチ用' : '記録用')
+const roleLabel = (role) =>
+  role === 'coach' ? 'コーチ用'
+  : role === 'vision' ? '写真認識'
+  : '記録用'
+
+// kind='vision' のモデルは vision タブにのみ、それ以外は parser/coach タブにのみ表示。
+const modelKindForRole = (role) => (role === 'vision' ? 'vision' : 'text')
+const modelMatchesRole = (model, role) => (model.kind ?? 'text') === modelKindForRole(role)
 
 // 現在 LLMProvider がロード中のモデルに対するステータス行。
 //   - error あり    → エラー文（赤）
@@ -70,7 +77,7 @@ const ActiveStatusRow = ({ llm }) => {
 
 const RoleTabs = ({ selected, onChange }) => (
   <View style={styles.tabs}>
-    {['parser', 'coach'].map((role) => {
+    {['parser', 'coach', 'vision'].map((role) => {
       const isActive = role === selected
       return (
         <Pressable
@@ -95,8 +102,10 @@ export default function ModelScreen() {
   const {
     parserModelId,
     coachModelId,
+    visionModelId,
     setParserModelId,
     setCoachModelId,
+    setVisionModelId,
     currentRole,
   } = useActiveModel()
   // 現在ロード中のモデル（currentRole に対応）の状態。
@@ -111,9 +120,20 @@ export default function ModelScreen() {
   // 例: 起動時 currentRole='parser' (記録用) でも、ユーザーが「コーチ用」タブを開いて
   //     coach 用モデルを変更することができる。
   const [selectedRole, setSelectedRole] = useState('parser')
-  const targetModelId = selectedRole === 'coach' ? coachModelId : parserModelId
+  const targetModelId =
+    selectedRole === 'coach' ? coachModelId
+    : selectedRole === 'vision' ? visionModelId
+    : parserModelId
   const setTargetModelId =
-    selectedRole === 'coach' ? setCoachModelId : setParserModelId
+    selectedRole === 'coach' ? setCoachModelId
+    : selectedRole === 'vision' ? setVisionModelId
+    : setParserModelId
+
+  // タブで絞り込み: vision タブは vision モデルだけ、parser/coach は text モデルだけ表示。
+  const visibleModels = useMemo(
+    () => LLM_MODELS.filter((m) => modelMatchesRole(m, selectedRole)),
+    [selectedRole],
+  )
 
   // どのモデルが DL 済みか（Set<string>）
   const [downloadedIds, setDownloadedIds] = useState(new Set())
@@ -189,14 +209,16 @@ export default function ModelScreen() {
     }
   }
 
-  // parser / coach いずれかで使用中のモデルは削除不可。
+  // parser / coach / vision いずれかで使用中のモデルは削除不可。
   const onDelete = (model) => {
     const usedByParser = model.id === parserModelId
     const usedByCoach = model.id === coachModelId
-    if (usedByParser || usedByCoach) {
+    const usedByVision = model.id === visionModelId
+    if (usedByParser || usedByCoach || usedByVision) {
       const roles = []
       if (usedByParser) roles.push('記録用')
       if (usedByCoach) roles.push('コーチ用')
+      if (usedByVision) roles.push('写真認識')
       Alert.alert(
         '削除できません',
         `このモデルは「${roles.join(' / ')}」で使用中です。先に別のモデルに切り替えてから削除してください。`,
@@ -229,7 +251,7 @@ export default function ModelScreen() {
     <ScrollView style={styles.flex} contentContainerStyle={styles.root}>
       <Text style={styles.desc}>
         チャットで使うローカル LLM を管理します。{'\n'}
-        「記録用」は食事内容の構造化、「コーチ用」はコーチ応答に使います。
+        「記録用」は食事内容の構造化、「コーチ用」はコーチ応答、「写真認識」は料理写真の認識に使います。
         必要に応じて自動で切り替わります（同時にロードはしません）。
       </Text>
 
@@ -248,7 +270,9 @@ export default function ModelScreen() {
       <Text style={styles.tabDesc}>
         {selectedRole === 'parser'
           ? '記録用: 軽量モデルでも十分。速度を優先しましょう。'
-          : 'コーチ用: 重めのモデルで応答品質が上がります。'}
+          : selectedRole === 'vision'
+            ? '写真認識: 料理写真から料理名を抽出します。軽量モデルで十分。'
+            : 'コーチ用: 重めのモデルで応答品質が上がります。'}
       </Text>
 
       {statusLoading && (
@@ -258,10 +282,13 @@ export default function ModelScreen() {
         </View>
       )}
 
-      {LLM_MODELS.map((m) => {
+      {visibleModels.map((m) => {
         const isSelectedForRole = m.id === targetModelId
         const usedByParser = m.id === parserModelId
         const usedByCoach = m.id === coachModelId
+        const usedByVision = m.id === visionModelId
+        // 同タブ内（同 kind）で別ロールの使用中表示。vision タブは vision モデルのみなので
+        // 「他ロールで使用中」は parser/coach タブの相互だけ発生する。
         const usedByOtherRole =
           (selectedRole === 'parser' && usedByCoach && !isSelectedForRole) ||
           (selectedRole === 'coach' && usedByParser && !isSelectedForRole)
@@ -276,8 +303,8 @@ export default function ModelScreen() {
         const recommendation = getRecommendation(m, selectedRole, ramBytes)
         const isRecommended = recommendation === 'recommended'
 
-        // 削除は parser / coach のどちらでも未使用のときのみ可能。
-        const inUseSomewhere = usedByParser || usedByCoach
+        // 削除は parser / coach / vision のいずれでも未使用のときのみ可能。
+        const inUseSomewhere = usedByParser || usedByCoach || usedByVision
 
         return (
           <View

@@ -30,7 +30,7 @@ const Row = ({ icon, title, subtitle, subtitleLines = 1, onPress }) => (
 
 export default function SettingsHome() {
   const navigation = useNavigation()
-  const { parserModel, coachModel } = useActiveModel()
+  const { parserModel, coachModel, visionModel } = useActiveModel()
 
   return (
     <ScreenTemplate>
@@ -55,8 +55,8 @@ export default function SettingsHome() {
           <Row
             icon="microchip"
             title="LLM モデル"
-            subtitle={`記録: ${parserModel.label}\nコーチ: ${coachModel.label}`}
-            subtitleLines={2}
+            subtitle={`記録: ${parserModel.label}\nコーチ: ${coachModel.label}\n写真: ${visionModel.label}`}
+            subtitleLines={3}
             onPress={() => navigation.navigate('ModelScreen')}
           />
           <View style={styles.divider} />

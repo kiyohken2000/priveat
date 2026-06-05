@@ -105,6 +105,7 @@ const COACH_SUGGESTIONS = [
   '体重の傾向は？',
 ]
 
+
 const PARSER_SYSTEM_PROMPT = `あなたはユーザーの記録メッセージを構造化データに変換するパーサーです。
 ユーザーが日本語で書いた内容を、種類(kind)に応じてJSONで出力してください。
 
@@ -422,6 +423,13 @@ export default function Chat() {
   const [llmCards, setLlmCards] = useState({}) // { historyIndex: { foodItems? | error? } }
   const [ocrBusy, setOcrBusy] = useState(false)
   const [mode, setMode] = useState('log') // 'log' | 'coach'
+
+  // llm の最新参照を ref で保持。async 経路から現行 isReady などを見るために使う
+  // (直接 llm を見るとクロージャに掴まれた古い参照になる)。
+  const llmRef = useRef(llm)
+  useEffect(() => {
+    llmRef.current = llm
+  }, [llm])
   const [inputText, setInputText] = useState('')
   // モード別に messageHistory / llmCards のスナップショットを保持。
   // モード切替時に「現在モード→保存」「新モード→復元」して configure に渡す。
@@ -442,6 +450,9 @@ export default function Chat() {
   // modeBusy のクリアもここで行う（swap 完了＋configure 完了が揃ったら解除）。
   useEffect(() => {
     if (!llm.isReady) return
+    // vision モデルがロード中の間は parser/coach 用 configure をスキップ。
+    // 料理写真認識フローは handlePhotoForVision が自前で generate を呼ぶ。
+    if (activeModel?.kind === 'vision') return
     let cancelled = false
     ;(async () => {
       try {
@@ -497,6 +508,8 @@ export default function Chat() {
     // コーチモードでは現在の履歴はすべてコーチ応答（プレーンテキスト表示のみ）。
     // パース処理はスキップ。
     if (mode === 'coach') return
+    // vision モデルがロード中は parser パースをかけない（chat 履歴は VLM の応答）
+    if (activeModel?.kind === 'vision') return
     const base = llm.messageHistory.filter((m) => m.role !== 'system')
     base.forEach((m, idx) => {
       if (m.role !== 'assistant') return
@@ -543,7 +556,7 @@ export default function Chat() {
         ).catch(() => {})
       })()
     })
-  }, [llm.messageHistory, llm.isGenerating, mode])
+  }, [llm.messageHistory, llm.isGenerating, mode, activeModel?.kind])
 
   // coach モードの Q&A を chat_messages テーブルに永続化。
   //   - 記録モードの会話は food_log が成果物として残るので保存しない。
@@ -551,6 +564,8 @@ export default function Chat() {
   useEffect(() => {
     if (llm.isGenerating) return
     if (mode !== 'coach') return
+    // vision モデルが乗っている間はコーチ応答ではないので persist しない
+    if (activeModel?.kind === 'vision') return
     const base = llm.messageHistory.filter((m) => m.role !== 'system')
     base.forEach((m, idx) => {
       if (m.role !== 'assistant') return
@@ -566,11 +581,16 @@ export default function Chat() {
         modelId: activeModel.id,
       }).catch((e) => console.warn('[chat] coach persist failed:', e?.message ?? e))
     })
-  }, [llm.messageHistory, llm.isGenerating, mode, activeModel.id])
+  }, [llm.messageHistory, llm.isGenerating, mode, activeModel.id, activeModel?.kind])
 
   const messages = useMemo(() => {
     const items = []
-    const base = llm.messageHistory.filter((m) => m.role !== 'system')
+    // vision モデルがロードされている間は messageHistory が VLM 応答で汚れているので
+    // localMessages のみ表示する (応答は handlePhotoForVision が localMessages に push 済み)
+    const base =
+      activeModel?.kind === 'vision'
+        ? []
+        : llm.messageHistory.filter((m) => m.role !== 'system')
     const stamps = llmTimestampsRef.current
     while (stamps.length < base.length) {
       const prev = stamps[stamps.length - 1] ?? 0
@@ -652,7 +672,7 @@ export default function Chat() {
     const all = [...items, ...localMessages]
     all.sort((a, b) => a.createdAt - b.createdAt)
     return all.reverse()
-  }, [llm.messageHistory, llmCards, localMessages, mode])
+  }, [llm.messageHistory, llmCards, localMessages, mode, activeModel?.kind])
 
   // モード切り替え: 現在モードのスナップショットを ref に保存し、mode + currentRole を更新。
   // configure 自体は上の useEffect が isReady の遷移を待って実行する。
@@ -785,18 +805,52 @@ export default function Chat() {
     }
   }, [ocrBusy])
 
+  // 料理写真 → VLM 経路。
+  //   現在は disable 中。executorch v0.9.0 の LFM2.5-VL-450M で iOS の native
+  //   `runner_->generate` が Failed to generate multimodal response を返す問題が
+  //   解決できず、llama.rn (llama.cpp バインディング) の initMultimodal 経路へ
+  //   切り替える方針を採用 (docs/PLAN_VLM_llama_rn.md)。
+  //   旧 executorch 経路実装は git history (HEAD~1) で参照可能。
+  const handlePhotoForVision = useCallback(async () => {
+    Alert.alert(
+      '準備中の機能です',
+      '料理写真の認識は llama.rn 経路へ切替中のため、一時的に無効化しています。',
+    )
+  }, [])
+
+  // 撮影/ライブラリ選択の共通 ActionSheet (OCR と VLM どちらの handler でも使う)
+  const showPickerSheet = useCallback(
+    (callback) => {
+      showActionSheetWithOptions(
+        {
+          options: ['カメラで撮影', 'ライブラリから選択', 'キャンセル'],
+          cancelButtonIndex: 2,
+        },
+        (selectedIndex) => {
+          if (selectedIndex === 0) callback(captureFromCamera)
+          else if (selectedIndex === 1) callback(pickFromLibrary)
+        },
+      )
+    },
+    [showActionSheetWithOptions],
+  )
+
   const onPressAttach = useCallback(() => {
     if (ocrBusy) return
-    const options = ['カメラで撮影', 'ライブラリから選択', 'キャンセル']
+    const options = [
+      'OCR で読む (ラベル / 体重 / フィットネス)',
+      '料理写真として認識 (準備中)',
+      'キャンセル',
+    ]
     const cancelButtonIndex = 2
     showActionSheetWithOptions(
-      { options, cancelButtonIndex, title: '画像を読み取る' },
+      { options, cancelButtonIndex, title: '画像の使い方を選ぶ' },
       (selectedIndex) => {
-        if (selectedIndex === 0) handleImage(captureFromCamera)
-        else if (selectedIndex === 1) handleImage(pickFromLibrary)
+        if (selectedIndex === 0) showPickerSheet(handleImage)
+        else if (selectedIndex === 1) handlePhotoForVision()
       },
     )
-  }, [showActionSheetWithOptions, handleImage, ocrBusy])
+  }, [showActionSheetWithOptions, showPickerSheet, handleImage, handlePhotoForVision, ocrBusy])
 
   const renderActions = useCallback(
     () => (
