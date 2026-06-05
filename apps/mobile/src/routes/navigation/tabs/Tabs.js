@@ -20,7 +20,7 @@ export default function TabNavigator() {
         tabBarInactiveTintColor: colors.gray,
         tabBarHideOnKeyboard: true,
       }}
-      initialRouteName="ChatTab"
+      initialRouteName="HomeTab"
     >
       <Tab.Screen
         name="ChatTab"

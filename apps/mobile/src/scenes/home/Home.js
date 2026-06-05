@@ -16,6 +16,7 @@ import SourceBadge from '../../components/SourceBadge'
 import ImagePreviewModal from '../../components/ImagePreviewModal'
 import AdviceCard from '../../components/AdviceCard'
 import PFCBar from '../../components/PFCBar'
+import SyncHealthButton from '../../components/SyncHealthButton'
 import { colors, fontSize } from '../../theme'
 import { getLatestWeight, getProfile } from '../../db/profile'
 import { getTodayEnergy, getTodayIntakeKcal, getTodayMacros, getTodayMeals } from '../../db/home'
@@ -219,6 +220,9 @@ export default function Home() {
                 </Text>
               </View>
             )}
+
+            {/* ヘルスケア同期 (今すぐ取り込み) */}
+            <SyncHealthButton onComplete={load} />
 
             {/* 栄養バランス (PFC) */}
             <View style={styles.card}>

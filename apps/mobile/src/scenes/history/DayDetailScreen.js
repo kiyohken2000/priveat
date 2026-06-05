@@ -25,6 +25,7 @@ import SourceBadge from '../../components/SourceBadge'
 import ImagePreviewModal from '../../components/ImagePreviewModal'
 import AdviceCard from '../../components/AdviceCard'
 import PFCBar from '../../components/PFCBar'
+import SyncHealthButton from '../../components/SyncHealthButton'
 
 const formatDateLong = (dateStr) => {
   // dateStr: 'YYYY-MM-DD'
@@ -160,7 +161,7 @@ export default function DayDetailScreen() {
         </View>
       ) : (
         <>
-          <Text style={styles.dateTitle}>{formatDateLong(date)}</Text>
+          {/* ヘッダーに日付が表示されるので本文では繰り返さない */}
 
           {/* サマリーカード */}
           <View style={styles.card}>
@@ -203,6 +204,9 @@ export default function DayDetailScreen() {
               </>
             )}
           </View>
+
+          {/* ヘルスケア同期 (今日の DayDetail でのみ表示) */}
+          {date === todayKey() && <SyncHealthButton onComplete={load} />}
 
           {/* 栄養バランス */}
           <View style={styles.card}>

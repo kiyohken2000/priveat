@@ -9,6 +9,18 @@ import EditFoodScreen from '../../../scenes/history/EditFoodScreen'
 
 const Stack = createStackNavigator()
 
+// 'YYYY-MM-DD' → '2026年6月5日(金)' のような日本語タイトル。route.params.date 未指定時は無難なラベル。
+const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土']
+const formatDateTitle = (dateStr) => {
+  if (!dateStr) return '日詳細'
+  try {
+    const d = new Date(`${dateStr}T00:00:00`)
+    return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日(${WEEKDAYS[d.getDay()]})`
+  } catch (e) {
+    return dateStr
+  }
+}
+
 export const HistoryStacks = () => (
   <Stack.Navigator
     initialRouteName="History"
@@ -30,7 +42,9 @@ export const HistoryStacks = () => (
     <Stack.Screen
       name="DayDetailScreen"
       component={DayDetailScreen}
-      options={{ title: '日詳細' }}
+      options={({ route }) => ({
+        title: formatDateTitle(route.params?.date),
+      })}
     />
     <Stack.Screen
       name="EditFoodScreen"
