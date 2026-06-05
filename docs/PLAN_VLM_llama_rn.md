@@ -77,11 +77,11 @@ llama.cpp 互換の GGUF VLM 候補 (Hugging Face で HEAD 検証済み実サイ
 | (参考) Qwen2-VL-2B | 2B | Q4 + Q8 mmproj | ~1.5GB | ~3GB | ○ | bartowski quant、Qwen3 で更新済 |
 | (参考) MiniCPM-V-2.6 | 8B | Q4 + mmproj | ~5GB+ | ~7GB | ◎ | iPhone 一般機種で OOM リスク高 |
 
-### ✅ 決定 A: 主軸モデル — **両方サポート**
+### ✅ 決定 A: 主軸モデル — **両方サポート** (実証結果反映済)
 
 ModelScreen の「写真」タブで以下 2 つを選択式にする:
-- **Qwen3-VL-2B-Instruct (main Q4_K_M + mmproj Q8)** — 中庸。日本語料理認識で実用ラインに乗りやすい想定。高スペック端末 (RAM 6GB+) 推奨。`Qwen/Qwen3-VL-2B-Instruct-GGUF` (公式、Apache 2.0)
-- **SmolVLM-500M-Instruct (main Q8 + mmproj Q8)** — 軽量重視。低スペック端末でも動く。`ggml-org/SmolVLM-500M-Instruct-GGUF` (公式、Apache 2.0)
+- **Qwen3-VL-2B-Instruct (main Q4_K_M + mmproj Q8)** — **推奨・実用ライン**。日本語料理名を 1-2 単語で正確に返す (実機確認: 餃子の写真 → `餃子` のみ)。RAM 6GB+ 推奨。`Qwen/Qwen3-VL-2B-Instruct-GGUF` (公式、Apache 2.0)
+- **SmolVLM-500M-Instruct (main Q8 + mmproj Q8)** — **軽量・不安定**。`ggml-org/SmolVLM-500M-Instruct-GGUF` (公式、Apache 2.0)。実機確認では `jinja=true` + temperature 0.1 でも日本語システムプロンプトが効かず、英語の説明文 5 行が返ってしまう。低スペック端末 (RAM 4GB) でのフォールバック用にとどめ、実用ユースは Qwen3-VL-2B を推奨
 
 `getRecommendation` の vision ロールは tier に応じて (low: SmolVLM-500M, mid/high: Qwen3-VL-2B 推奨) のロジックを入れる。
 

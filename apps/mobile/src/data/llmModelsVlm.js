@@ -16,8 +16,9 @@ export const VLM_MODELS = [
   {
     id: 'smolvlm-500m-q8',
     label: 'SmolVLM 500M (量子化)',
-    description: '軽量・高速。低スペック端末でも動く。料理認識の精度はそれなり。',
-    badge: '軽量',
+    description:
+      '軽量・高速 (~521MB)。日本語の指示理解が弱く、料理名ではなく英語の説明文が返ることが多いです。低スペック端末でのフォールバック用。',
+    badge: '軽量・不安定',
     family: 'SmolVLM',
     kind: 'vision',
     minDeviceRamBytes: RAM_TIER.TIER_4GB,
@@ -33,8 +34,8 @@ export const VLM_MODELS = [
   {
     id: 'qwen3-vl-2b-q4',
     label: 'Qwen3-VL 2B (量子化)',
-    description: '中量。日本語料理認識で実用ラインに乗りやすい。高スペック端末向け。',
-    badge: 'バランス',
+    description: '中量 (~1.49GB)。日本語料理名を正確に返す。実用ライン。RAM 6GB+ 推奨。',
+    badge: '推奨',
     family: 'Qwen3-VL',
     kind: 'vision',
     minDeviceRamBytes: RAM_TIER.TIER_6GB,

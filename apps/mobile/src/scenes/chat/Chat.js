@@ -888,8 +888,13 @@ export default function Chat() {
                   ],
                 },
               ],
-              n_predict: 128,
-              temperature: 0.2,
+              // jinja=true でモデル本体に含まれる正規 chat_template を使う。
+              // デフォルト (jinja=false) だと llama-chat の簡易フォーマットになり、
+              // system role が無視されて英語説明文が返るケースがあった。
+              jinja: true,
+              // 料理名だけ欲しいので短く + 揺らぎ最小に。
+              n_predict: 64,
+              temperature: 0.1,
             })
             return (res?.text ?? res?.content ?? '').toString()
           },
