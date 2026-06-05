@@ -1,5 +1,5 @@
 import { useFocusEffect } from '@react-navigation/native'
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
@@ -12,7 +12,12 @@ import {
 import { colors, fontSize } from '../../theme'
 import { LLM_MODELS } from '../../data/llmModels'
 import { useActiveLLM, useActiveModel } from '../../state/modelContext'
-import { canRunOnDevice } from '../../utils/deviceRam'
+import { canRunOnDevice, getDeviceRamBytes } from '../../utils/deviceRam'
+import {
+  getDeviceTier,
+  getRecommendation,
+  getRoleGuidanceForTier,
+} from '../../utils/modelRecommendation'
 import {
   cancelDownload,
   deleteModel,
@@ -97,6 +102,10 @@ export default function ModelScreen() {
   // 現在ロード中のモデル（currentRole に対応）の状態。
   // 開いているタブと currentRole が一致するときだけステータス行を表示する。
   const llm = useActiveLLM()
+
+  // 端末スペック判定はマウント時に 1 回だけ評価。RAM は起動中に変わらない。
+  const ramBytes = useMemo(() => getDeviceRamBytes(), [])
+  const deviceTier = useMemo(() => getDeviceTier(ramBytes), [ramBytes])
 
   // 設定画面で「いま編集対象にしているロール」。currentRole とは独立。
   // 例: 起動時 currentRole='parser' (記録用) でも、ユーザーが「コーチ用」タブを開いて
@@ -224,6 +233,16 @@ export default function ModelScreen() {
         必要に応じて自動で切り替わります（同時にロードはしません）。
       </Text>
 
+      <View style={styles.deviceBanner}>
+        <Text style={styles.deviceBannerTitle}>
+          📱 この端末: {deviceTier.ramGb != null ? `約 ${deviceTier.ramGb.toFixed(1)} GB · ` : ''}
+          {deviceTier.label}
+        </Text>
+        <Text style={styles.deviceBannerHint}>
+          {getRoleGuidanceForTier(deviceTier, selectedRole)}
+        </Text>
+      </View>
+
       <RoleTabs selected={selectedRole} onChange={setSelectedRole} />
 
       <Text style={styles.tabDesc}>
@@ -252,8 +271,10 @@ export default function ModelScreen() {
         const progress = progressMap[m.id]
         const isDownloading = progress != null
         const pct = Math.round((progress ?? 0) * 100)
-        const compat = canRunOnDevice(m)
+        const compat = canRunOnDevice(m, ramBytes)
         const unsupported = !compat.ok
+        const recommendation = getRecommendation(m, selectedRole, ramBytes)
+        const isRecommended = recommendation === 'recommended'
 
         // 削除は parser / coach のどちらでも未使用のときのみ可能。
         const inUseSomewhere = usedByParser || usedByCoach
@@ -269,7 +290,14 @@ export default function ModelScreen() {
             ]}
           >
             <View style={styles.cardHeader}>
-              <Text style={styles.cardTitle}>{m.label}</Text>
+              <View style={styles.cardTitleWrap}>
+                <Text style={styles.cardTitle}>{m.label}</Text>
+                {isRecommended && !isSelectedForRole && (
+                  <View style={styles.recommendPill}>
+                    <Text style={styles.recommendPillText}>★ 推奨</Text>
+                  </View>
+                )}
+              </View>
               <View
                 style={[
                   styles.badge,
@@ -451,6 +479,25 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     lineHeight: 18,
   },
+  deviceBanner: {
+    backgroundColor: '#f4f3fb',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 14,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.lightPurple,
+  },
+  deviceBannerTitle: {
+    fontSize: fontSize.middle,
+    color: colors.darkPurple,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  deviceBannerHint: {
+    fontSize: fontSize.small,
+    color: colors.darkPurple,
+    lineHeight: 18,
+  },
   statusBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -518,11 +565,31 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 6,
   },
+  // タイトル + 推奨ピルをまとめる左ブロック。残り幅を取って右側 badge と並ぶ。
+  cardTitleWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 1,
+    gap: 6,
+  },
   cardTitle: {
     fontSize: fontSize.large,
     fontWeight: '700',
     color: colors.darkPurple,
     flexShrink: 1,
+  },
+  recommendPill: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 8,
+    backgroundColor: '#fff4c2',
+    borderWidth: 1,
+    borderColor: '#e6c34a',
+  },
+  recommendPillText: {
+    fontSize: 10,
+    color: '#7a5a00',
+    fontWeight: '700',
   },
   badge: {
     paddingHorizontal: 8,

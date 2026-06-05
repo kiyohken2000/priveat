@@ -170,7 +170,9 @@
 
 ## フェーズ10: 仕上げ
 
-- [ ] 端末性能に応じたモデル切替（設定画面）
+- [x] 端末性能に応じたモデル切替（設定画面）
+  - `utils/modelRecommendation.js`: `getDeviceTier` (4GB/6GB/8GB+ + unknown) と `getRecommendation(model, role, ramBytes)` を実装
+  - `ModelScreen`: 端末ティアと役割向けガイダンスを表示するバナーを追加、推奨モデルには「★ 推奨」ピル表示。parser は常に最軽量を推奨、coach はティアに応じて軽量〜高品質を推奨
 - [ ] 各種ライセンス・出典クレジットの表示
 - [ ] エラー処理・オフライン挙動の総点検
 - [ ] アプリアイコンのデザイン（名称は Priveat に確定。`Priv` + `eat` の繋ぎ目を色で分けると由来が伝わる）
