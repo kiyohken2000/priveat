@@ -158,7 +158,10 @@ export default function AdviceCard({ date, kind = 'today' }) {
   const workingLabel =
     phase === 'awaiting-swap' ? 'コーチモデルを準備中...' : 'アドバイスを生成中...'
 
-  // 吹き出し内に何を表示するか。working > cached > placeholder の優先度。
+  // マスコット + 吹き出しを出すかどうか。アドバイス未生成 (placeholder 状態) では非表示。
+  const showMascot = isWorking || showCached
+
+  // 吹き出し内に何を表示するか。working > cached の優先度。
   const renderBubbleContent = () => {
     if (isWorking) {
       return (
@@ -168,27 +171,20 @@ export default function AdviceCard({ date, kind = 'today' }) {
         </View>
       )
     }
-    if (showCached) {
-      return (
-        <>
-          <EnrichedMarkdownText
-            markdown={cached.advice_text}
-            markdownStyle={MARKDOWN_STYLE}
-            flavor="github"
-            allowTrailingMargin={false}
-            selectable
-          />
-          <Text style={styles.meta}>
-            {formatGeneratedAt(cached.generated_at)} · {cached.model_id ?? '不明モデル'}
-          </Text>
-        </>
-      )
-    }
+    // showCached 前提 (showMascot で囲まれる側でしか呼ばない)
     return (
-      <Text style={styles.placeholder}>
-        ボタンを押すとコーチモデル ({coachModel?.label ?? '未選択'}) で
-        短いアドバイスを生成するよ。
-      </Text>
+      <>
+        <EnrichedMarkdownText
+          markdown={cached.advice_text}
+          markdownStyle={MARKDOWN_STYLE}
+          flavor="github"
+          allowTrailingMargin={false}
+          selectable
+        />
+        <Text style={styles.meta}>
+          {formatGeneratedAt(cached.generated_at)} · {cached.model_id ?? '不明モデル'}
+        </Text>
+      </>
     )
   }
 
@@ -204,22 +200,29 @@ export default function AdviceCard({ date, kind = 'today' }) {
         )}
       </View>
 
-      <View style={styles.speechRow}>
-        <View style={styles.mascotWrap}>
-          <LottieView
-            source={mascotSource}
-            style={styles.mascot}
-            autoPlay
-            loop
-          />
-        </View>
-        <View style={styles.bubbleWrap}>
-          <View style={styles.bubbleTail} />
-          <View style={styles.bubble}>
-            {renderBubbleContent()}
+      {showMascot ? (
+        <View style={styles.speechRow}>
+          <View style={styles.mascotWrap}>
+            <LottieView
+              source={mascotSource}
+              style={styles.mascot}
+              autoPlay
+              loop
+            />
+          </View>
+          <View style={styles.bubbleWrap}>
+            <View style={styles.bubbleTail} />
+            <View style={styles.bubble}>
+              {renderBubbleContent()}
+            </View>
           </View>
         </View>
-      </View>
+      ) : (
+        <Text style={styles.placeholder}>
+          ボタンを押すとコーチモデル ({coachModel?.label ?? '未選択'}) で
+          短いアドバイスを生成します。
+        </Text>
+      )}
 
       {error ? <Text style={styles.errorText}>エラー: {error}</Text> : null}
 
@@ -290,13 +293,13 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   mascotWrap: {
-    width: 140,
-    height: 140,
+    width: 200,
+    height: 200,
     alignSelf: 'center',
   },
   mascot: {
-    width: 140,
-    height: 140,
+    width: 200,
+    height: 200,
   },
   bubbleWrap: {
     position: 'relative',
@@ -341,6 +344,7 @@ const styles = StyleSheet.create({
     fontSize: fontSize.small,
     color: colors.gray,
     lineHeight: 18,
+    marginBottom: 8,
   },
   meta: {
     fontSize: 10,
