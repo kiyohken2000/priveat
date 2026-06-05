@@ -23,6 +23,7 @@ import { colors, fontSize } from '../../theme'
 import FoodCard from './FoodCard'
 import WeightCard from './WeightCard'
 import ActivityCard from './ActivityCard'
+import UnknownOcrCard from './UnknownOcrCard'
 import { getRecordSchemaPrompt, normalizePortion, parseRecordOutput } from './schema'
 import { computeKcalFromMatch, findBestFood } from '../../db/search'
 import { countFoodLog, insertFoodLogFromLabel, insertFoodLogItems } from '../../db/foodLog'
@@ -254,6 +255,20 @@ const makeOcrResultMessage = (text) => {
     createdAt: new Date(stamp + 1), // ensure it sorts after the image
     user: ASSISTANT,
     isOcrResult: true,
+  }
+}
+
+// OCR の振り分けに失敗した (kind='unknown') ときの手入力カード用 IMessage。
+//   rawText は OCR が読み取った生テキスト。カード側で参考表示。
+//   food_log への登録はユーザー入力待ち。
+const makeUnknownOcrMessage = (rawText) => {
+  const stamp = Date.now()
+  return {
+    _id: `local-unknown-${stamp}`,
+    text: '',
+    createdAt: new Date(stamp + 1),
+    user: ASSISTANT,
+    unknownOcr: { rawText: rawText ?? '' },
   }
 }
 
@@ -748,17 +763,16 @@ export default function Chat() {
         })
         resultText = formatWeightResult(parsed, id)
       } else {
-        // 振り分け失敗時は生テキストをそのまま表示（手入力フォールバックの足がかり）
-        resultText = `判定できませんでした。読み取った全文:\n\n${rawText.slice(0, 500)}`
+        // 振り分け失敗時は UnknownOcrCard で手入力 → food_log 登録を案内
+        console.log('=========================')
+        setLocalMessages((prev) => [...prev, makeUnknownOcrMessage(rawText)])
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {})
+        return
       }
       console.log('=========================')
 
       setLocalMessages((prev) => [...prev, makeOcrResultMessage(resultText)])
-      Haptics.notificationAsync(
-        parsed.kind === 'unknown'
-          ? Haptics.NotificationFeedbackType.Warning
-          : Haptics.NotificationFeedbackType.Success,
-      ).catch(() => {})
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
     } catch (e) {
       console.warn('[ocr] failed:', e?.message ?? e)
       setLocalMessages((prev) => [
@@ -858,6 +872,55 @@ export default function Chat() {
     [],
   )
 
+  // OCR 振り分け失敗時の手入力カードの「食事として記録」ハンドラ。
+  //   kcal が null なら食品 DB 検索で baseKcal を補完。入力されていればそのまま使う。
+  //   food_log に source='ocr_manual' で1行 INSERT。
+  const handleUnknownOcrSave = useCallback(
+    async (messageId, { name, quantity, unit, kcal }) => {
+      let baseKcal = kcal
+      let matched = null
+      if (baseKcal == null) {
+        matched = await findBestFood(name).catch((e) => {
+          console.warn('[db] search failed:', e?.message ?? e)
+          return null
+        })
+        baseKcal = computeKcalFromMatch(matched, quantity, unit, name)
+      }
+      const [id] = await insertFoodLogItems(
+        [
+          {
+            name,
+            quantity,
+            unit,
+            portion: 'normal',
+            baseKcal,
+            matchedFoodId: matched?.id ?? null,
+          },
+        ],
+        { source: 'ocr_manual' },
+      )
+      const summary = `${name} ${quantity}${unit}${
+        baseKcal != null ? ` · ${baseKcal} kcal` : ''
+      }`
+      setLocalMessages((prev) =>
+        prev.map((m) =>
+          m._id === messageId
+            ? {
+                ...m,
+                unknownOcr: {
+                  ...m.unknownOcr,
+                  savedFoodLogId: id,
+                  savedSummary: summary,
+                },
+              }
+            : m,
+        ),
+      )
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+    },
+    [],
+  )
+
   // テキスト経由の活動量カードの「記録する」ハンドラ。
   //   energy_log に source='text' で1行入れ、llmCards のエントリに saved 状態をマージする。
   const handleActivitySave = useCallback(
@@ -945,9 +1008,12 @@ export default function Chat() {
       if (current?.activityRecord) {
         return <ActivityCard message={current} onSave={handleActivitySave} />
       }
+      if (current?.unknownOcr) {
+        return <UnknownOcrCard message={current} onSave={handleUnknownOcrSave} />
+      }
       return <Bubble {...props} renderMessageText={renderAssistantMarkdown} />
     },
-    [updateFoodItem, handleLabelSave, handleWeightSave, handleActivitySave],
+    [updateFoodItem, handleLabelSave, handleWeightSave, handleActivitySave, handleUnknownOcrSave],
   )
 
   const renderChatEmpty = useCallback(
