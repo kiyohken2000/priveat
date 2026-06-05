@@ -190,7 +190,7 @@
 - [x] Android `RECORD_AUDIO` 削除（音声入力は計画外）
 - [ ] react-native-executorch を主軸（テキスト・コーチング・VLM）、llama.rn を予備（GBNFフォールバック）として確定済み。両方を意図的に保持。MVPで llama.rn 不使用が確実ならサイズ削減目的で一時的に外す判断のみ検討
 - [x] axios（^0.21.2, 既知の脆弱性）を削除（コード内で未使用だったため `yarn remove axios` で依存ごと除去）
-- [ ] package.json の `"eject"` スクリプト（廃止コマンド）を削除
+- [x] package.json の `"eject"` スクリプト（廃止コマンド）を削除（履歴上一度も含まれていなかったため対応不要を確認）
 - [ ] （フェーズ6）HealthKit / Health Connect の権限・entitlement・説明文を追加（フェーズ6の項目参照）
 
 ## 横断的に常に意識すること
