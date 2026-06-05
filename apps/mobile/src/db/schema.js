@@ -127,6 +127,17 @@ export const MIGRATIONS = [
       );
     `,
   },
+  // v4: テキスト経由の活動量記録に必要な列を energy_log に追加。
+  //   activity_name TEXT: 種目名 ('ランニング' / 'ウォーキング' 等)
+  //   duration_min  REAL: 時間 (分)。距離入力は MET 辞書の想定速度で時間に換算してから保存
+  //   既存の OCR 行は NULL のまま (集計表示で問題なし)。
+  {
+    version: 4,
+    sql: `
+      ALTER TABLE energy_log ADD COLUMN activity_name TEXT;
+      ALTER TABLE energy_log ADD COLUMN duration_min REAL;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version

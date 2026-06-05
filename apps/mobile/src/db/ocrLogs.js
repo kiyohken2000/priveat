@@ -27,32 +27,54 @@ export const insertProductFromLabel = async (data, options = {}) => {
   return res?.lastInsertRowId ?? null
 }
 
-// フィットネスアプリスクショの結果を energy_log に保存。
-export const insertEnergyFromFitness = async (data, options = {}) => {
+// 活動量を energy_log に1行入れる統一ヘルパー。テキスト・OCR どちらの経路からも呼ぶ。
+//   source: 'text' | 'ocr' (将来 'health' / 'manual' も追加余地)
+//   activity_name / duration_min: テキスト経路で使う種目別の記録。OCR (フィットネス全体集計) では null
+//   active_kcal / basal_kcal / steps: 値があれば保存、無ければ null
+//   imageUri: 原本 URI。渡されれば documentDirectory にコピーして image_uri に保存。
+export const insertEnergyLog = async ({
+  active_kcal = null,
+  basal_kcal = null,
+  steps = null,
+  activity_name = null,
+  duration_min = null,
+  source,
+  imageUri = null,
+}) => {
   const db = getDb()
   const loggedAt = new Date().toISOString()
-  const { imageUri = null } = options
-  const persisted = await persistOcrImage(imageUri, 'energy')
+  const persisted = imageUri ? await persistOcrImage(imageUri, 'energy') : null
   const res = await db.runAsync(
-    `INSERT INTO energy_log (logged_at, active_kcal, steps, source, image_uri)
-     VALUES (?, ?, ?, 'ocr', ?)`,
-    [loggedAt, data.activeKcal ?? null, data.steps ?? null, persisted],
+    `INSERT INTO energy_log
+       (logged_at, active_kcal, basal_kcal, steps, activity_name, duration_min, source, image_uri)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [loggedAt, active_kcal, basal_kcal, steps, activity_name, duration_min, source, persisted],
   )
   return res?.lastInsertRowId ?? null
 }
 
-// 体重スクショの結果を weight_log に保存。
-//   履歴複数行が読めても、現状は最新の1件だけを保存する。
-export const insertWeightFromOcr = async (data, options = {}) => {
+// フィットネスアプリスクショの結果を energy_log に保存（薄いラッパ）。
+export const insertEnergyFromFitness = async (data, options = {}) => {
+  return insertEnergyLog({
+    active_kcal: data.activeKcal ?? null,
+    steps: data.steps ?? null,
+    source: 'ocr',
+    imageUri: options.imageUri ?? null,
+  })
+}
+
+// 体重を weight_log に1行入れる統一ヘルパー。テキスト経路・OCR 経路の両方から呼ぶ。
+//   source: 'text' | 'ocr' (今後 'health' / 'manual' 追加余地あり)
+//   imageUri: 原本 URI (カメラ/ライブラリ)。渡された場合は documentDirectory にコピーして保存。
+export const insertWeightLog = async ({ weight_kg, source, imageUri = null }) => {
+  if (weight_kg == null) return null
   const db = getDb()
   const measuredAt = new Date().toISOString()
-  if (data.latest == null) return null
-  const { imageUri = null } = options
-  const persisted = await persistOcrImage(imageUri, 'weight')
+  const persisted = imageUri ? await persistOcrImage(imageUri, 'weight') : null
   const res = await db.runAsync(
     `INSERT INTO weight_log (measured_at, weight_kg, source, image_uri)
-     VALUES (?, ?, 'ocr', ?)`,
-    [measuredAt, data.latest, persisted],
+     VALUES (?, ?, ?, ?)`,
+    [measuredAt, weight_kg, source, persisted],
   )
   return res?.lastInsertRowId ?? null
 }

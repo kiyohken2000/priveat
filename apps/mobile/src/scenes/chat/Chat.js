@@ -21,13 +21,17 @@ import FontIcon from 'react-native-vector-icons/FontAwesome'
 import ScreenTemplate from '../../components/ScreenTemplate'
 import { colors, fontSize } from '../../theme'
 import FoodCard from './FoodCard'
-import { getFoodSchemaPrompt, normalizePortion, parseFoodOutput } from './schema'
+import WeightCard from './WeightCard'
+import ActivityCard from './ActivityCard'
+import { getRecordSchemaPrompt, normalizePortion, parseRecordOutput } from './schema'
 import { computeKcalFromMatch, findBestFood } from '../../db/search'
 import { countFoodLog, insertFoodLogFromLabel, insertFoodLogItems } from '../../db/foodLog'
 import { insertCoachExchange } from '../../db/chatMessages'
 import { captureFromCamera, pickFromLibrary, runOcr } from './imageOcr'
 import { detectAndParse } from './ocrParsers'
-import { insertEnergyFromFitness, insertProductFromLabel, insertWeightFromOcr } from '../../db/ocrLogs'
+import { insertEnergyFromFitness, insertEnergyLog, insertProductFromLabel, insertWeightLog } from '../../db/ocrLogs'
+import { getLatestWeight } from '../../db/profile'
+import { DEFAULT_WEIGHT_KG, estimateActivityKcal } from '../../utils/mets'
 import LabelRecordCard from './LabelRecordCard'
 
 const USER = { _id: 1 }
@@ -100,38 +104,109 @@ const COACH_SUGGESTIONS = [
   '体重の傾向は？',
 ]
 
-const PARSER_SYSTEM_PROMPT = `あなたは食事の記述を構造化データに変換するパーサーです。
-ユーザーが日本語で書いた食事内容を、食品ごとに分解してJSONで出力してください。
+const PARSER_SYSTEM_PROMPT = `あなたはユーザーの記録メッセージを構造化データに変換するパーサーです。
+ユーザーが日本語で書いた内容を、種類(kind)に応じてJSONで出力してください。
 
-ルール:
-- 各食品について name（食品名）, quantity（数量）, unit（単位）を抽出する
+kind の種類:
+- "food":     食事の記録 (例: 食パン1枚、ささみ200g、カツ丼)
+- "weight":   体重の記録 (例: 体重68.5kg、今朝70.2)
+- "activity": 運動・活動の記録 (例: ランニング60分、ウォーキング30分)
+- "unknown":  上記のいずれでもない
+
+kind ごとの出力形式:
+- food:     {"kind":"food","items":[{"name":..,"quantity":..,"unit":..}]}
+- weight:   {"kind":"weight","weight_kg":68.5}
+- activity: {"kind":"activity","activity_name":"ランニング","duration_min":60}
+            または {"kind":"activity","activity_name":"ウォーキング","distance_km":2}
+- unknown:  {"kind":"unknown"}
+
+重要:
+- "items" 配列は kind="food" のときだけ使う。activity / weight では絶対に items を作らない。
+  activity は activity_name と duration_min/distance_km をトップレベルに直接入れる。
+
+food のルール:
+- 各食品について name, quantity, unit を抽出する
 - name は一般的な表記に正規化する
-- ユーザーが書いた数量はそのままの数値を使う（200g なら quantity=200, unit="g"。途中で桁を削らない）
-- 数量や単位は、それが書かれている品目だけに付ける（他の品目に勝手にコピーしない）
+- ユーザーが書いた数量はそのままの数値を使う (200g なら quantity=200, unit="g"。途中で桁を削らない)
+- 数量や単位は、それが書かれている品目だけに付ける (他の品目に勝手にコピーしない)
 - 単位は g / 個 / 本 / 杯 / 枚 / 切 / 缶 / 袋 / 人前 など自然なものを選ぶ
-- 「大盛り」「少なめ」などのニュアンスは portion に入れる（書かれている品目だけ）
+- 「大盛り」「少なめ」などのニュアンスは portion に入れる
 - カロリーや栄養素は推定しない
 - 数量も単位もどちらも書かれていない品目だけ quantity=1, unit="人前" にする
-- 食品を含まない入力は items を空配列 [] にする
+
+weight のルール:
+- weight_kg は kg 単位の数値 ("68.5kg" なら 68.5、"70.2" だけでも 70.2)
+
+activity のルール:
+- activity_name は種目名。活用形ではなく一般的な名詞形に正規化する
+  - 「歩く」「歩いて」「歩いた」「ウォーキング」 → "ウォーキング"
+  - 「走る」「走った」「ランニング」「ジョギング」 → "ランニング"
+  - 「自転車」「漕いだ」「サイクリング」 → "サイクリング"
+  - 「泳いだ」「水泳」 → "水泳"
+  - 「筋トレ」「ウェイト」 → "筋トレ"
+- 「分」「時間」と書かれた数値は duration_min（分単位、"1時間"→60, "30分"→30）
+- 「キロ」「km」「m」と書かれた数値は distance_km（km単位、"2キロ"→2, "5km"→5, "500m"→0.5）
+  「キロ」「km」が付いていたら絶対に duration_min ではなく distance_km にする
+- 時間と距離の両方が書かれていれば両方とも出力する
+- 時間も距離もない（例: "ランニングした"）場合は kind="unknown" を返す
 
 ユーザーへの返答はしない。JSONだけを返すこと。`
 
 const FEW_SHOT_EXAMPLES = `以下の例を参考にしてください:
 
 入力: 食パン1枚とゆで卵2個
-出力: {"items":[{"name":"食パン","quantity":1,"unit":"枚"},{"name":"ゆで卵","quantity":2,"unit":"個"}]}
+出力: {"kind":"food","items":[{"name":"食パン","quantity":1,"unit":"枚"},{"name":"ゆで卵","quantity":2,"unit":"個"}]}
 
 入力: ささみ200gとブロッコリー100g
-出力: {"items":[{"name":"ささみ","quantity":200,"unit":"g"},{"name":"ブロッコリー","quantity":100,"unit":"g"}]}
+出力: {"kind":"food","items":[{"name":"ささみ","quantity":200,"unit":"g"},{"name":"ブロッコリー","quantity":100,"unit":"g"}]}
 
 入力: ごはん大盛りと焼き魚
-出力: {"items":[{"name":"ごはん","quantity":1,"unit":"杯","portion":"大盛り"},{"name":"焼き魚","quantity":1,"unit":"切"}]}
+出力: {"kind":"food","items":[{"name":"ごはん","quantity":1,"unit":"杯","portion":"大盛り"},{"name":"焼き魚","quantity":1,"unit":"切"}]}
+
+入力: 体重68.5kg
+出力: {"kind":"weight","weight_kg":68.5}
+
+入力: 今朝70.2だった
+出力: {"kind":"weight","weight_kg":70.2}
+
+入力: ランニング60分した
+出力: {"kind":"activity","activity_name":"ランニング","duration_min":60}
+
+入力: 30分ウォーキング
+出力: {"kind":"activity","activity_name":"ウォーキング","duration_min":30}
+
+入力: 1時間筋トレ
+出力: {"kind":"activity","activity_name":"筋トレ","duration_min":60}
+
+入力: 30分歩いて買い物してきた
+出力: {"kind":"activity","activity_name":"ウォーキング","duration_min":30}
+
+入力: 45分自転車漕いだ
+出力: {"kind":"activity","activity_name":"サイクリング","duration_min":45}
+
+入力: 2キロ歩いた
+出力: {"kind":"activity","activity_name":"ウォーキング","distance_km":2}
+
+入力: 3キロ走った
+出力: {"kind":"activity","activity_name":"ランニング","distance_km":3}
+
+入力: 5km走った
+出力: {"kind":"activity","activity_name":"ランニング","distance_km":5}
+
+入力: 1キロ歩いた
+出力: {"kind":"activity","activity_name":"ウォーキング","distance_km":1}
+
+入力: 10km自転車
+出力: {"kind":"activity","activity_name":"サイクリング","distance_km":10}
+
+入力: 30分で3キロ走った
+出力: {"kind":"activity","activity_name":"ランニング","duration_min":30,"distance_km":3}
 
 入力: お腹すいた
-出力: {"items":[]}`
+出力: {"kind":"unknown"}`
 
 const buildSystemPrompt = () =>
-  `${PARSER_SYSTEM_PROMPT}\n${getFoodSchemaPrompt()}\n${FEW_SHOT_EXAMPLES}\n/no_think`
+  `${PARSER_SYSTEM_PROMPT}\n${getRecordSchemaPrompt()}\n${FEW_SHOT_EXAMPLES}\n/no_think`
 
 const makeDummyCardMessage = () => {
   const stamp = Date.now()
@@ -234,33 +309,75 @@ const stripThink = (text) => {
   return out.trim()
 }
 
-const parseAndEnrich = async (content, idx) => {
+// LLM 出力 → kind ごとの dispatch。返り値は discriminated union:
+//   { kind: 'food',     foodItems }                       — 食品 DB マッチ + kcal 計算済み
+//   { kind: 'weight',   weight_kg }                       — ② で WeightCard 描画予定
+//   { kind: 'activity', activity_name, duration_min?, distance_km? } — ③ で ActivityCard 描画予定
+//   { kind: 'unknown' }                                   — 食事/体重/運動いずれでもない
+//   { error }                                             — パース失敗
+const parseAndDispatch = async (content, idx) => {
+  let parsed
   try {
-    const parsed = parseFoodOutput(content)
-    const enriched = await Promise.all(
-      parsed.items.map(async (it, j) => {
-        const matched = await findBestFood(it.name).catch((err) => {
-          console.warn('[db] search failed for', it.name, err)
-          return null
-        })
-        const computedKcal = computeKcalFromMatch(matched, it.quantity, it.unit, it.name)
-        return {
-          id: `${idx}-${j}`,
-          name: it.name,
-          quantity: it.quantity,
-          unit: it.unit,
-          portion: normalizePortion(it.portion),
-          baseKcal: computedKcal,
-          matchedName: matched?.name ?? null,
-          matchedFoodCode: matched?.food_code ?? null,
-          matchedFoodId: matched?.id ?? null,
-        }
-      }),
-    )
-    return { foodItems: enriched }
+    parsed = parseRecordOutput(content)
   } catch (e) {
     return { error: e?.message ?? String(e) }
   }
+  if (parsed.kind === 'food') {
+    try {
+      const enriched = await Promise.all(
+        parsed.items.map(async (it, j) => {
+          const matched = await findBestFood(it.name).catch((err) => {
+            console.warn('[db] search failed for', it.name, err)
+            return null
+          })
+          const computedKcal = computeKcalFromMatch(matched, it.quantity, it.unit, it.name)
+          return {
+            id: `${idx}-${j}`,
+            name: it.name,
+            quantity: it.quantity,
+            unit: it.unit,
+            portion: normalizePortion(it.portion),
+            baseKcal: computedKcal,
+            matchedName: matched?.name ?? null,
+            matchedFoodCode: matched?.food_code ?? null,
+            matchedFoodId: matched?.id ?? null,
+          }
+        }),
+      )
+      return { kind: 'food', foodItems: enriched }
+    } catch (e) {
+      return { error: e?.message ?? String(e) }
+    }
+  }
+  if (parsed.kind === 'weight') {
+    return { kind: 'weight', weight_kg: parsed.weight_kg }
+  }
+  if (parsed.kind === 'activity') {
+    // 体重を weight_log 最新から取る。プロフィール未登録 / 計測なしなら 60kg デフォルト。
+    let weightKg = DEFAULT_WEIGHT_KG
+    try {
+      const latest = await getLatestWeight()
+      if (latest?.weight_kg) weightKg = latest.weight_kg
+    } catch (e) {
+      console.warn('[db] getLatestWeight failed:', e?.message ?? e)
+    }
+    const est = estimateActivityKcal({
+      activity_name: parsed.activity_name,
+      duration_min: parsed.duration_min,
+      distance_km: parsed.distance_km,
+      weight_kg: weightKg,
+    })
+    return {
+      kind: 'activity',
+      activity_name: est.canonical_name ?? parsed.activity_name,
+      duration_min: est.duration_min ?? parsed.duration_min ?? null,
+      distance_km: parsed.distance_km ?? null,
+      estimated_kcal: est.kcal,
+      met: est.met,
+      weight_kg_used: est.weight_kg_used,
+    }
+  }
+  return { kind: 'unknown' }
 }
 
 export default function Chat() {
@@ -376,8 +493,8 @@ export default function Chat() {
         console.log('[model]', activeModel.id)
         if (userMsg) console.log('[USER]', userMsg)
         console.log('[LLM raw]', m.content)
-        const result = await parseAndEnrich(m.content, idx)
-        if (result.foodItems) {
+        const result = await parseAndDispatch(m.content, idx)
+        if (result.kind === 'food' && result.foodItems) {
           console.log('[parsed+enriched]', JSON.stringify(result.foodItems, null, 2))
           try {
             const insertedIds = await insertFoodLogItems(result.foodItems)
@@ -386,14 +503,26 @@ export default function Chat() {
           } catch (e) {
             console.warn('[food_log] insert failed:', e?.message ?? e)
           }
+        } else if (result.kind === 'weight') {
+          console.log('[parsed weight]', result.weight_kg, 'kg (② で記録 UI を実装予定)')
+        } else if (result.kind === 'activity') {
+          const parts = [
+            result.duration_min != null ? `${result.duration_min}分` : null,
+            result.distance_km != null ? `${result.distance_km}km` : null,
+            result.estimated_kcal != null ? `推定${result.estimated_kcal}kcal` : 'kcal推定不可',
+          ].filter(Boolean)
+          console.log('[parsed activity]', result.activity_name, parts.join(' / '))
+        } else if (result.kind === 'unknown') {
+          console.log('[parsed unknown] 食事/体重/運動いずれでもない')
         } else {
           console.log('[parse error]', result.error)
         }
         console.log('==============================')
         setLlmCards((prev) => ({ ...prev, [idx]: result }))
         // AI 応答が画面に出るタイミングでハプティック。成功 / 失敗で振動を出し分け。
+        const isWarn = result.error || result.kind === 'unknown'
         Haptics.notificationAsync(
-          result.error
+          isWarn
             ? Haptics.NotificationFeedbackType.Warning
             : Haptics.NotificationFeedbackType.Success,
         ).catch(() => {})
@@ -449,7 +578,7 @@ export default function Chat() {
         return
       }
       const card = llmCards[i]
-      if (card?.foodItems) {
+      if (card?.kind === 'food' && card.foodItems) {
         items.push({
           _id: `h-${i}`,
           text: '',
@@ -457,10 +586,47 @@ export default function Chat() {
           user: ASSISTANT,
           foodItems: card.foodItems,
         })
+      } else if (card?.kind === 'weight') {
+        items.push({
+          _id: `h-${i}`,
+          text: '',
+          createdAt,
+          user: ASSISTANT,
+          weightRecord: {
+            initial_kg: card.weight_kg,
+            savedWeightLogId: card.savedWeightLogId,
+            savedSummary: card.savedSummary,
+          },
+        })
+      } else if (card?.kind === 'activity') {
+        items.push({
+          _id: `h-${i}`,
+          text: '',
+          createdAt,
+          user: ASSISTANT,
+          activityRecord: {
+            initial_name: card.activity_name,
+            initial_duration_min: card.duration_min,
+            initial_distance_km: card.distance_km,
+            initial_kcal: card.estimated_kcal,
+            met: card.met,
+            weight_kg_used: card.weight_kg_used,
+            savedEnergyLogId: card.savedEnergyLogId,
+            savedSummary: card.savedSummary,
+          },
+        })
+      } else if (card?.kind === 'unknown') {
+        items.push({
+          _id: `h-${i}`,
+          text: '食事・体重・運動のいずれにも判定できませんでした。書き方を変えて試してみてください。',
+          createdAt,
+          user: ASSISTANT,
+          isError: true,
+        })
       } else if (card?.error) {
         items.push({
           _id: `h-${i}`,
-          text: '食品を抽出できませんでした。もう少し具体的に書いてみてください。',
+          text: '記録を抽出できませんでした。もう少し具体的に書いてみてください。',
           createdAt,
           user: ASSISTANT,
           isError: true,
@@ -575,7 +741,11 @@ export default function Chat() {
         const id = await insertEnergyFromFitness(parsed, { imageUri: uri })
         resultText = formatFitnessResult(parsed, id)
       } else if (parsed.kind === 'weight') {
-        const id = await insertWeightFromOcr(parsed, { imageUri: uri })
+        const id = await insertWeightLog({
+          weight_kg: parsed.latest,
+          source: 'ocr',
+          imageUri: uri,
+        })
         resultText = formatWeightResult(parsed, id)
       } else {
         // 振り分け失敗時は生テキストをそのまま表示（手入力フォールバックの足がかり）
@@ -662,6 +832,63 @@ export default function Chat() {
     }
   }, [])
 
+  // テキスト経由の体重カードの「記録する」ハンドラ。
+  //   weight_log に source='text' で1行入れ、llmCards のエントリに saved 状態をマージする。
+  const handleWeightSave = useCallback(
+    async (messageId, { weight_kg }) => {
+      const id = await insertWeightLog({ weight_kg, source: 'text' })
+      const summary = `${weight_kg} kg を記録しました (#${id})`
+      if (messageId.startsWith('h-')) {
+        const idx = Number(messageId.slice(2))
+        setLlmCards((prev) => {
+          const entry = prev[idx]
+          if (!entry || entry.kind !== 'weight') return prev
+          return {
+            ...prev,
+            [idx]: {
+              ...entry,
+              savedWeightLogId: id,
+              savedSummary: summary,
+            },
+          }
+        })
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+    },
+    [],
+  )
+
+  // テキスト経由の活動量カードの「記録する」ハンドラ。
+  //   energy_log に source='text' で1行入れ、llmCards のエントリに saved 状態をマージする。
+  const handleActivitySave = useCallback(
+    async (messageId, { activity_name, duration_min, active_kcal }) => {
+      const id = await insertEnergyLog({
+        activity_name,
+        duration_min,
+        active_kcal,
+        source: 'text',
+      })
+      const summary = `${activity_name} ${duration_min}分 / ${active_kcal} kcal を記録しました (#${id})`
+      if (messageId.startsWith('h-')) {
+        const idx = Number(messageId.slice(2))
+        setLlmCards((prev) => {
+          const entry = prev[idx]
+          if (!entry || entry.kind !== 'activity') return prev
+          return {
+            ...prev,
+            [idx]: {
+              ...entry,
+              savedEnergyLogId: id,
+              savedSummary: summary,
+            },
+          }
+        })
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+    },
+    [],
+  )
+
   // ラベル OCR カードの「食事として記録」ハンドラ。
   //   productId / perUnit はカード側から渡してもらう (localMessages を依存にしない)。
   const handleLabelSave = useCallback(
@@ -712,9 +939,15 @@ export default function Chat() {
       if (current?.labelRecord) {
         return <LabelRecordCard message={current} onSave={handleLabelSave} />
       }
+      if (current?.weightRecord) {
+        return <WeightCard message={current} onSave={handleWeightSave} />
+      }
+      if (current?.activityRecord) {
+        return <ActivityCard message={current} onSave={handleActivitySave} />
+      }
       return <Bubble {...props} renderMessageText={renderAssistantMarkdown} />
     },
-    [updateFoodItem, handleLabelSave],
+    [updateFoodItem, handleLabelSave, handleWeightSave, handleActivitySave],
   )
 
   const renderChatEmpty = useCallback(

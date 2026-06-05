@@ -75,6 +75,34 @@
 
 **DoD**: 「カツ丼と缶チューハイ2本」と送ると、食品リストに分解されカードに出る。
 
+### 拡張: 体重・活動量のテキスト入力（multi-intent parser）
+
+OCR 経路だけでなく、`ランニング60分した` `体重68.5kg` のような文章からも体重・活動量を記録できるようにする。①→②→③ の順にコミットを分ける。
+
+- [x] ① parser を multi-intent 化
+  - `PARSER_SYSTEM_PROMPT` を拡張し、JSON に `kind` を含めて出力（`food` / `weight` / `activity` / `unknown`）
+  - few-shot に体重・活動量の例を追加（活用形正規化、距離指定例 `2キロ歩いた` 含む）
+  - `scenes/chat/schema.js` の `parseFoodOutput` を `parseRecordOutput` にリネームし、kind 分岐の土台を作る
+  - activity は `duration_min` / `distance_km` のどちらか（または両方）を受け入れる
+  - Chat.js の dispatch を kind ごとに分岐（この段階では `kind=food` のみ通し、weight/activity はプレースホルダ）
+- [x] ② テキスト経由の体重記録
+  - `kind=weight` を受けて `WeightCard` を表示（数値編集 + 「記録する」ボタン）
+  - 既存 `insertWeightFromOcr` を削除し `insertWeightLog({weight_kg, source, imageUri?})` に統一（OCR 側も新ヘルパーを使うように差し替え）
+  - source 値: テキスト経由は `'text'`
+- [x] ③ テキスト経由の活動量記録
+  - `utils/mets.js` 新規: 16 種目の辞書。種目ごとに `MET 値` ＋ `想定速度 (km/h)` を持つ
+    （ウォーキング・ランニング・ジョギング・サイクリング・水泳・筋トレ・ヨガ・ストレッチ・テニス・サッカー・バスケットボール・登山・ハイキング・縄跳び・ダンス・家事）
+  - 同義語フォールバック辞書 (`歩いて` → `ウォーキング` 等) で LLM の活用形ドリフトを救済
+  - kcal 推定 `MET × weight_kg × hours × 1.05`
+  - `distance_km` だけ来た場合は `想定速度` から duration_min を換算して kcal 計算
+  - 体重は `weight_log` 最新から取得、無ければ 60kg デフォルト
+  - DB v4 マイグレーション: `energy_log` に `activity_name TEXT` / `duration_min REAL` 列を追加（distance は保存せず分に換算して保存）
+  - `kind=activity` を受けて `ActivityCard` を表示（種目・分・推定 kcal を編集 → `energy_log` INSERT、source=`'text'`）
+  - 時間を編集すると kcal が自動再計算される (MET × 体重 × 時間 × 1.05)
+  - OCR フィットネス側のヘルパー（`insertEnergyFromFitness`）も `insertEnergyLog` の薄ラッパに揃える
+
+**DoD（拡張）**: `ランニング60分した` → 活動量カードに種目・推定 kcal が出て `energy_log` に保存される。`2キロ歩いた` も距離→分換算で保存される。`体重68.5kg` → 体重カードが出て `weight_log` に保存される。
+
 ---
 
 ## フェーズ4: 食品DB（成分表）と集計
@@ -87,7 +115,7 @@
 - [ ] 候補が複数/不一致のときカード上でユーザーに選択させる → 任意、後段
 - [x] 数量を掛けてカロリー算出（g 直接 + portionWeights 経由）
 - [x] `food_log` への保存（portion factor を適用、ref_food_id で foods 紐付け、source='text_llm'）
-- [ ] 出典表記の実装（「日本食品標準成分表（八訂）増補2023年から引用」）→ フェーズ10 仕上げで対応
+- [x] 出典表記の実装（「日本食品標準成分表（八訂）増補2023年（文部科学省）から引用」を設定画面の about セクションに表示）
 - [x] AI 応答時にハプティックフィードバック（成功=Success、失敗=Warning）
 
 **DoD**: 文章入力 → 食品DB照合 → 正しいカロリーがカードに出て、ログに保存される。
@@ -148,7 +176,8 @@
 - [x] 履歴データをLLMに渡すコンテキスト整形（`coaching/context.js` + `advice.js` の date 指定版）
 - [x] 「先週より炭水化物多い？」等の履歴質問応答（Chat の coach モード + COACH_SUGGESTIONS）
 - [x] 日次のアドバイス生成（Home/DayDetail に `AdviceCard`、ワンショット `llm.generate`、`coach_advice` テーブルでキャッシュ）
-  - マスコット表示: `assets/lottie/nimonyan/*.json` 21 種から日付ハッシュで 1 体選び、`AdviceCard` 上部に Lottie + 吹き出し UI で表示（`coaching/mascot.js`）
+  - マスコット表示: `assets/lottie/nimonyan/*.json` 21 種から日付ハッシュで 1 体選び、`AdviceCard` 上部に Lottie + 吹き出し UI で表示（`coaching/mascot.js`）。プレースホルダ状態ではマスコットを非表示
+  - 生成成功時にハプティック（`Haptics.NotificationFeedbackType.Success`）
 - [ ] 週次サマリーのアドバイス（後段、必要に応じて）
 - [x] スタンス自由文入力（設定 > コーチへの指示 = `StanceScreen` → AsyncStorage）
 - [x] 過度に否定的にならない・健康的な方向に導くトーン調整（`COACH_RULES`、アドバイス用は `COACH_ADVICE_SYSTEM_PROMPT` で文字数も指定）
@@ -173,7 +202,7 @@
 - [x] 端末性能に応じたモデル切替（設定画面）
   - `utils/modelRecommendation.js`: `getDeviceTier` (4GB/6GB/8GB+ + unknown) と `getRecommendation(model, role, ramBytes)` を実装
   - `ModelScreen`: 端末ティアと役割向けガイダンスを表示するバナーを追加、推奨モデルには「★ 推奨」ピル表示。parser は常に最軽量を推奨、coach はティアに応じて軽量〜高品質を推奨
-- [ ] 各種ライセンス・出典クレジットの表示
+- [x] 各種ライセンス・出典クレジットの表示（成分表出典を `SettingsHome` の about セクションに記載。マスコットはオリジナル、OSS ライセンス一覧は MVP では省略）
 - [ ] エラー処理・オフライン挙動の総点検
 - [ ] アプリアイコンのデザイン（名称は Priveat に確定。`Priv` + `eat` の繋ぎ目を色で分けると由来が伝わる）
 - [ ] 公開前: App Store / Google Play での "Priveat" 名称重複・商標の確認

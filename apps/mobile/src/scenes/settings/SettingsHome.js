@@ -72,6 +72,9 @@ export default function SettingsHome() {
           <Image source={images.logo_sm} style={styles.aboutLogo} resizeMode="contain" />
           <Text style={styles.aboutAppName}>Priveat</Text>
           <Text style={styles.aboutVersion}>バージョン {version}</Text>
+          <Text style={styles.aboutCredit}>
+            成分データ: 日本食品標準成分表（八訂）増補2023年（文部科学省）から引用
+          </Text>
         </View>
       </ScrollView>
     </ScreenTemplate>
@@ -139,5 +142,13 @@ const styles = StyleSheet.create({
     fontSize: fontSize.small,
     color: colors.gray,
     marginTop: 2,
+  },
+  aboutCredit: {
+    fontSize: fontSize.small,
+    color: colors.gray,
+    marginTop: 16,
+    textAlign: 'center',
+    paddingHorizontal: 20,
+    lineHeight: 18,
   },
 })
