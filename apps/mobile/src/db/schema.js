@@ -138,6 +138,24 @@ export const MIGRATIONS = [
       ALTER TABLE energy_log ADD COLUMN duration_min REAL;
     `,
   },
+  // v5: 食品データソースの多重化 (八訂 + Slism)。
+  //   - source TEXT: 'mext' (八訂) / 'slism' (個人利用範囲のみ)
+  //   - alt_name TEXT: 別名 (Slism は alternateName で持っている)
+  //   - fiber_per_100g REAL: 食物繊維 (Slism は持っている)
+  //   - serving_size_g REAL / kcal_per_serving REAL: Slism の 1 食分参考値
+  //   既存行は source='mext' で埋める。
+  {
+    version: 5,
+    sql: `
+      ALTER TABLE foods ADD COLUMN source TEXT;
+      ALTER TABLE foods ADD COLUMN alt_name TEXT;
+      ALTER TABLE foods ADD COLUMN fiber_per_100g REAL;
+      ALTER TABLE foods ADD COLUMN serving_size_g REAL;
+      ALTER TABLE foods ADD COLUMN kcal_per_serving REAL;
+      UPDATE foods SET source = 'mext' WHERE source IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_foods_source ON foods(source);
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version
