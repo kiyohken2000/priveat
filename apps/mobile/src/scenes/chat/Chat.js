@@ -470,11 +470,15 @@ export default function Chat() {
     llmRef.current = llm
   }, [llm])
   const [inputText, setInputText] = useState('')
-  // モード別に messageHistory / llmCards のスナップショットを保持。
+  // モード別に messageHistory / llmCards / localMessages のスナップショットを保持。
   // モード切替時に「現在モード→保存」「新モード→復元」して configure に渡す。
+  // localMessages (VLM 画像 / FoodCard / OCR 結果) を mode 横断で残すと、コーチに
+  // 切り替えたあとも記録モード固有のカードが見えてしまうため、こちらも snapshot 化する。
   const logHistoryRef = useRef([])
   const coachHistoryRef = useRef([])
   const logCardsRef = useRef({})
+  const logLocalMessagesRef = useRef([])
+  const coachLocalMessagesRef = useRef([])
   const [modeBusy, setModeBusy] = useState(false)
   const llmTimestampsRef = useRef([])
   const { showActionSheetWithOptions } = useActionSheet()
@@ -489,9 +493,6 @@ export default function Chat() {
   // modeBusy のクリアもここで行う（swap 完了＋configure 完了が揃ったら解除）。
   useEffect(() => {
     if (!llm.isReady) return
-    // vision モデルがロード中の間は parser/coach 用 configure をスキップ。
-    // 料理写真認識フローは handlePhotoForVision が自前で generate を呼ぶ。
-    if (activeModel?.kind === 'vision') return
     let cancelled = false
     ;(async () => {
       try {
@@ -547,8 +548,6 @@ export default function Chat() {
     // コーチモードでは現在の履歴はすべてコーチ応答（プレーンテキスト表示のみ）。
     // パース処理はスキップ。
     if (mode === 'coach') return
-    // vision モデルがロード中は parser パースをかけない（chat 履歴は VLM の応答）
-    if (activeModel?.kind === 'vision') return
     const base = llm.messageHistory.filter((m) => m.role !== 'system')
     base.forEach((m, idx) => {
       if (m.role !== 'assistant') return
@@ -595,7 +594,7 @@ export default function Chat() {
         ).catch(() => {})
       })()
     })
-  }, [llm.messageHistory, llm.isGenerating, mode, activeModel?.kind])
+  }, [llm.messageHistory, llm.isGenerating, mode])
 
   // coach モードの Q&A を chat_messages テーブルに永続化。
   //   - 記録モードの会話は food_log が成果物として残るので保存しない。
@@ -603,8 +602,6 @@ export default function Chat() {
   useEffect(() => {
     if (llm.isGenerating) return
     if (mode !== 'coach') return
-    // vision モデルが乗っている間はコーチ応答ではないので persist しない
-    if (activeModel?.kind === 'vision') return
     const base = llm.messageHistory.filter((m) => m.role !== 'system')
     base.forEach((m, idx) => {
       if (m.role !== 'assistant') return
@@ -620,16 +617,11 @@ export default function Chat() {
         modelId: activeModel.id,
       }).catch((e) => console.warn('[chat] coach persist failed:', e?.message ?? e))
     })
-  }, [llm.messageHistory, llm.isGenerating, mode, activeModel.id, activeModel?.kind])
+  }, [llm.messageHistory, llm.isGenerating, mode, activeModel.id])
 
   const messages = useMemo(() => {
     const items = []
-    // vision モデルがロードされている間は messageHistory が VLM 応答で汚れているので
-    // localMessages のみ表示する (応答は handlePhotoForVision が localMessages に push 済み)
-    const base =
-      activeModel?.kind === 'vision'
-        ? []
-        : llm.messageHistory.filter((m) => m.role !== 'system')
+    const base = llm.messageHistory.filter((m) => m.role !== 'system')
     const stamps = llmTimestampsRef.current
     while (stamps.length < base.length) {
       const prev = stamps[stamps.length - 1] ?? 0
@@ -711,7 +703,7 @@ export default function Chat() {
     const all = [...items, ...localMessages]
     all.sort((a, b) => a.createdAt - b.createdAt)
     return all.reverse()
-  }, [llm.messageHistory, llmCards, localMessages, mode, activeModel?.kind])
+  }, [llm.messageHistory, llmCards, localMessages, mode])
 
   // モード切り替え: 現在モードのスナップショットを ref に保存し、mode + currentRole を更新。
   // configure 自体は上の useEffect が isReady の遷移を待って実行する。
@@ -731,11 +723,16 @@ export default function Chat() {
         if (mode === 'log') {
           logHistoryRef.current = currentHist
           logCardsRef.current = llmCards
+          logLocalMessagesRef.current = localMessages
         } else {
           coachHistoryRef.current = currentHist
+          coachLocalMessagesRef.current = localMessages
         }
         const restoreCards = newMode === 'log' ? logCardsRef.current : {}
+        const restoreLocalMessages =
+          newMode === 'log' ? logLocalMessagesRef.current : coachLocalMessagesRef.current
         setLlmCards(restoreCards)
+        setLocalMessages(restoreLocalMessages)
         setInputText('')
         setMode(newMode)
         // ロール切替 → Provider 側で必要ならモデル swap
@@ -749,7 +746,7 @@ export default function Chat() {
         setModeBusy(false)
       }
     },
-    [mode, llm, llmCards, modeBusy, currentRole, setCurrentRole],
+    [mode, llm, llmCards, localMessages, modeBusy, currentRole, setCurrentRole],
   )
 
   const onSend = useCallback(

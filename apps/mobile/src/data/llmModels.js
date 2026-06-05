@@ -1,8 +1,6 @@
 import {
   LFM2_5_1_2B_INSTRUCT_QUANTIZED,
   LFM2_5_350M_QUANTIZED,
-  LFM2_5_VL_1_6B_QUANTIZED,
-  LFM2_5_VL_450M_QUANTIZED,
   QWEN3_0_6B_QUANTIZED,
   QWEN3_1_7B_QUANTIZED,
   QWEN3_4B_QUANTIZED,
@@ -20,8 +18,8 @@ import { RAM_TIER } from '../utils/deviceRam'
 //   - 軽量モデル (~500MB): TIER_4GB
 //   - 中量モデル (~1.2GB):  TIER_6GB
 //   - 大型モデル (~2GB+):   TIER_8GB
-// kind は ModelScreen のタブで使う：'text' (parser/coach 用) / 'vision' (vision 用)。
-// 未指定は 'text' 扱い (既存モデルの後方互換)。
+// kind は廃止。本ファイルのモデルは全て parser/coach 用 (text)。
+// VLM (vision) は llama.rn 経由で別管理: data/llmModelsVlm.js を参照。
 
 export const LLM_MODELS = [
   // ---- Qwen3 系（既存。日本語の安定度が高い） --------------------------------
@@ -98,31 +96,6 @@ export const LLM_MODELS = [
     approxSizeMb: 900,
     minDeviceRamBytes: RAM_TIER.TIER_6GB,
     source: LFM2_5_1_2B_INSTRUCT_QUANTIZED,
-  },
-
-  // ---- LFM2.5-VL 系（vision）-----------------------------------------------
-  // 料理写真から料理名を抽出する用。kind='vision' タブで選択可能。
-  {
-    id: 'lfm2.5-vl-450m-q',
-    label: 'LFM2.5-VL 450M (量子化)',
-    description: '料理写真の認識用・軽量モデル。多くの端末で動く。',
-    badge: '軽量',
-    family: 'LFM2.5-VL',
-    kind: 'vision',
-    approxSizeMb: 350,
-    minDeviceRamBytes: RAM_TIER.TIER_4GB,
-    source: LFM2_5_VL_450M_QUANTIZED,
-  },
-  {
-    id: 'lfm2.5-vl-1.6b-q',
-    label: 'LFM2.5-VL 1.6B (量子化)',
-    description: '料理写真の認識用・高品質版。高スペック端末向け。',
-    badge: '高品質',
-    family: 'LFM2.5-VL',
-    kind: 'vision',
-    approxSizeMb: 1200,
-    minDeviceRamBytes: RAM_TIER.TIER_6GB,
-    source: LFM2_5_VL_1_6B_QUANTIZED,
   },
 ]
 

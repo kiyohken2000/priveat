@@ -36,10 +36,6 @@ const roleLabel = (role) =>
   : role === 'vision' ? '写真認識'
   : '記録用'
 
-// kind='vision' のモデルは vision タブにのみ、それ以外は parser/coach タブにのみ表示。
-const modelKindForRole = (role) => (role === 'vision' ? 'vision' : 'text')
-const modelMatchesRole = (model, role) => (model.kind ?? 'text') === modelKindForRole(role)
-
 // 現在 LLMProvider がロード中のモデルに対するステータス行。
 //   - error あり    → エラー文（赤）
 //   - isReady       → ロード済み（緑チェック）
@@ -103,10 +99,8 @@ export default function ModelScreen() {
   const {
     parserModelId,
     coachModelId,
-    visionModelId,
     setParserModelId,
     setCoachModelId,
-    setVisionModelId,
     currentRole,
   } = useActiveModel()
   // 現在ロード中のモデル（currentRole に対応）の状態。
@@ -121,18 +115,13 @@ export default function ModelScreen() {
   // 例: 起動時 currentRole='parser' (記録用) でも、ユーザーが「コーチ用」タブを開いて
   //     coach 用モデルを変更することができる。
   const [selectedRole, setSelectedRole] = useState('parser')
-  const targetModelId =
-    selectedRole === 'coach' ? coachModelId
-    : selectedRole === 'vision' ? visionModelId
-    : parserModelId
-  const setTargetModelId =
-    selectedRole === 'coach' ? setCoachModelId
-    : selectedRole === 'vision' ? setVisionModelId
-    : setParserModelId
+  // vision タブは VlmModelTab に委譲するため、ここでは parser/coach のみ意識すれば良い。
+  const targetModelId = selectedRole === 'coach' ? coachModelId : parserModelId
+  const setTargetModelId = selectedRole === 'coach' ? setCoachModelId : setParserModelId
 
-  // タブで絞り込み: vision タブは vision モデルだけ、parser/coach は text モデルだけ表示。
+  // parser/coach タブのみ executorch LLM_MODELS を出す。vision タブは別ロジック。
   const visibleModels = useMemo(
-    () => LLM_MODELS.filter((m) => modelMatchesRole(m, selectedRole)),
+    () => (selectedRole === 'vision' ? [] : LLM_MODELS),
     [selectedRole],
   )
 
@@ -214,12 +203,10 @@ export default function ModelScreen() {
   const onDelete = (model) => {
     const usedByParser = model.id === parserModelId
     const usedByCoach = model.id === coachModelId
-    const usedByVision = model.id === visionModelId
-    if (usedByParser || usedByCoach || usedByVision) {
+    if (usedByParser || usedByCoach) {
       const roles = []
       if (usedByParser) roles.push('記録用')
       if (usedByCoach) roles.push('コーチ用')
-      if (usedByVision) roles.push('写真認識')
       Alert.alert(
         '削除できません',
         `このモデルは「${roles.join(' / ')}」で使用中です。先に別のモデルに切り替えてから削除してください。`,
@@ -293,9 +280,7 @@ export default function ModelScreen() {
         const isSelectedForRole = m.id === targetModelId
         const usedByParser = m.id === parserModelId
         const usedByCoach = m.id === coachModelId
-        const usedByVision = m.id === visionModelId
-        // 同タブ内（同 kind）で別ロールの使用中表示。vision タブは vision モデルのみなので
-        // 「他ロールで使用中」は parser/coach タブの相互だけ発生する。
+        // parser/coach タブ間で「もう一方のロールで使用中」を表示する。
         const usedByOtherRole =
           (selectedRole === 'parser' && usedByCoach && !isSelectedForRole) ||
           (selectedRole === 'coach' && usedByParser && !isSelectedForRole)
@@ -310,8 +295,8 @@ export default function ModelScreen() {
         const recommendation = getRecommendation(m, selectedRole, ramBytes)
         const isRecommended = recommendation === 'recommended'
 
-        // 削除は parser / coach / vision のいずれでも未使用のときのみ可能。
-        const inUseSomewhere = usedByParser || usedByCoach || usedByVision
+        // 削除は parser / coach のいずれでも未使用のときのみ可能。
+        const inUseSomewhere = usedByParser || usedByCoach
 
         return (
           <View
