@@ -101,11 +101,12 @@
 - [x] 画像URI → rn-mlkit-ocr で文字認識する共通処理（`scenes/chat/imageOcr.js`、撮影・スクショ両対応）
 - [x] 食品ラベルの栄養成分表示パーサー（`ocrParsers.js: parseLabelText`、g↔8 誤読・末尾消失に対応）
 - [x] 読取結果を `products` にキャッシュ（`source='label_ocr'`）
+- [x] **ラベル OCR → 食品名手動入力 → `food_log` 登録**（`LabelRecordCard` をチャットバブルとして描画。ラベルには食品名が無いことが多いので、ユーザーが名前と個数を入れて「食事として記録」を押すと `insertFoodLogFromLabel` が走る。同時に `products.name` もユーザー入力で上書きして履歴の識別性を確保）
 - [x] フィットネスアプリのスクショから消費カロリー/距離/歩数を抽出 → `energy_log`
 - [x] 体重スクショから複数行を抽出、最新値を `weight_log` に保存（仕様外だが追加対応）
 - [x] OCR種別の自動振り分け（label/weight/fitness/unknown のルーター。kcal の大小文字で label と fitness を区別）
 - [x] Composer Actions の📷ボタン（フェーズ2 から繰り越し、OCR と一緒に実装）
-- [ ] OCR失敗時の手入力フォールバック → 任意、後段（現状は振り分け失敗時に生テキストを表示する暫定 fallback）
+- [ ] OCR失敗時 (kind='unknown') の手入力フォールバック → 現状は生テキスト表示まで。LabelRecordCard と同じパターンで「食品名 + kcal を手入力するカード」を出せる余地あり
 - [x] AI 応答時のハプティック（成功=Success、失敗=Warning）OCR 経路にも適用
 
 **DoD**: ラベル写真から栄養成分が、スクショから消費カロリー・体重が読み取れる。
@@ -122,6 +123,7 @@
 - [x] 権限リクエストのUX（設定 > ヘルス連携の「ヘルス連携を許可して同期する」ボタン）
 - [x] `energy_log` / `weight_log` への取り込み（日次集計、source='health' で重複防止 upsert、最終同期日時を AsyncStorage に保存）
 - [x] スクショ入力との使い分け（source 列で 'ocr' / 'health' / 'manual' を区別）
+- [x] **ホーム / 今日の DayDetail に「ヘルスケアと同期」ボタン**（`SyncHealthButton`、設定画面まで行かずワンタップで `syncHealthToDb` 実行。最終同期時刻を相対表示、完了時に親画面 reload）
 
 **DoD**: 連携を許可すると、消費カロリーと体重が自動取得される。✅
 
@@ -132,8 +134,10 @@
 - [x] ホーム: 今日のサマリー（摂取/消費/収支・残り・進捗バー・最新体重・今日の食事リスト）
 - [x] 履歴: 日別リスト（30日、`History.js`）+ 月別カレンダー（`CalendarScreen.js`）
 - [x] 履歴: 週別グラフ（カロリー収支7日 + 体重推移30日、`react-native-gifted-charts`）
-- [x] 栄養バランス表示（Home / DayDetail に PFCBar、`food_log` × `foods` の JOIN で kcal 比から逆算）
+- [x] 栄養バランス表示（Home / DayDetail に PFCBar、`food_log` 直接列を優先 → 無ければ `foods` JOIN で kcal 比から逆算。ラベル OCR 経由でも反映）
 - [x] 過去日の編集・削除（`EditFoodScreen` + DayDetail の削除ボタン）
+- [x] DayDetail のヘッダータイトル = 日付（例: "2026年6月5日(金)"、`HistoryStacks.js` で `route.params.date` から動的生成）
+- [x] **デフォルトタブをホームに変更**（起動直後の LLM ロード表示を避け、最初に見えるのがデータ画面になるようにする）
 
 **DoD**: 別画面で日別・週別の記録を振り返れる（ChatGPTにない履歴機能の実現）。✅
 
