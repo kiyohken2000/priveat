@@ -6,6 +6,7 @@ import {
   Text,
   View,
 } from 'react-native'
+import * as Haptics from 'expo-haptics'
 import LottieView from 'lottie-react-native'
 import { EnrichedMarkdownText } from 'react-native-enriched-markdown'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
@@ -93,6 +94,7 @@ export default function AdviceCard({ date, kind = 'today' }) {
       await generateAdvice({ date, llm, modelId: coachModelId, kind })
       await reloadInspect()
       setPhase('idle')
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
     } catch (e) {
       console.warn('[adviceCard] generate failed:', e)
       setError(e?.message ?? String(e))
