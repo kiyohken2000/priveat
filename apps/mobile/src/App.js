@@ -9,6 +9,7 @@ import store from 'utils/store'
 import 'utils/ignore'
 import { initDb } from './db'
 import { ModelProvider } from './state/modelContext'
+import { cleanupOldOcrImages } from './utils/imageCleanup'
 
 // assets
 import { imageAssets } from 'theme/images'
@@ -31,6 +32,10 @@ export default function App() {
       ...fontAssets,
     ])
     setDidLoad(true)
+    // 50日以上前の OCR 画像を削除（fire-and-forget、起動を妨げない）
+    cleanupOldOcrImages({ maxAgeDays: 50 }).catch((e) =>
+      console.warn('[App] cleanupOldOcrImages failed:', e?.message ?? e),
+    )
   }
 
   useEffect(() => {

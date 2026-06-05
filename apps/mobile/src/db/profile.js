@@ -10,11 +10,11 @@ export const getProfile = async () => {
   return row ?? null
 }
 
-// weight_log から最新1件を取って weight_kg と measured_at を返す。
+// weight_log から最新1件を取って weight_kg / measured_at / source / image_uri を返す。
 export const getLatestWeight = async () => {
   const db = getDb()
   const row = await db.getFirstAsync(
-    'SELECT weight_kg, measured_at FROM weight_log ORDER BY measured_at DESC LIMIT 1',
+    'SELECT weight_kg, measured_at, source, image_uri FROM weight_log ORDER BY measured_at DESC LIMIT 1',
   )
   return row ?? null
 }

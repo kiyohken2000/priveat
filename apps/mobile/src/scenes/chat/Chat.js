@@ -1,15 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
+  Alert,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native'
-import { Bubble, GiftedChat, InputToolbar } from 'react-native-gifted-chat'
-import { useLLM } from 'react-native-executorch'
-import { useActiveModel } from '../../state/modelContext'
+import { Bubble, GiftedChat, InputToolbar, Message, MessageText, Send } from 'react-native-gifted-chat'
+import { EnrichedMarkdownText } from 'react-native-enriched-markdown'
+import { useActiveLLM, useActiveModel } from '../../state/modelContext'
+import { buildCoachingContext } from '../../coaching/context'
+import { buildCoachSystemPrompt } from '../../coaching/prompts'
 import * as Haptics from 'expo-haptics'
 import { useActionSheet } from '@expo/react-native-action-sheet'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
@@ -25,6 +30,73 @@ import { insertEnergyFromFitness, insertProductFromLabel, insertWeightFromOcr } 
 
 const USER = { _id: 1 }
 const ASSISTANT = { _id: 2, name: 'AI' }
+
+// コーチング応答などの AI 自由発言はマークダウン形式で出ることが多いので
+// EnrichedMarkdownText で描画する。Bubble の left 背景（薄グレー）の上に置かれる。
+const MARKDOWN_STYLE = {
+  paragraph: { color: colors.black, fontSize: fontSize.middle, marginTop: 0, marginBottom: 6 },
+  h1: { color: colors.darkPurple, fontSize: 20, fontWeight: '700', marginTop: 4, marginBottom: 6 },
+  h2: { color: colors.darkPurple, fontSize: 18, fontWeight: '700', marginTop: 4, marginBottom: 6 },
+  h3: { color: colors.darkPurple, fontSize: 16, fontWeight: '700', marginTop: 4, marginBottom: 4 },
+  list: { color: colors.black, fontSize: fontSize.middle, marginBottom: 6, bulletColor: colors.lightPurple },
+  blockquote: { color: colors.darkPurple, borderColor: colors.lightPurple, borderWidth: 3, backgroundColor: 'transparent' },
+  codeBlock: {
+    color: colors.darkPurple,
+    fontFamily: 'Courier',
+    backgroundColor: '#efedf7',
+    borderRadius: 6,
+    padding: 8,
+    marginBottom: 6,
+  },
+  code: { color: colors.darkPurple, backgroundColor: '#efedf7', fontFamily: 'Courier' },
+  strong: { color: colors.darkPurple },
+  link: { color: colors.lightPurple, underline: true },
+}
+
+const renderAssistantMarkdown = (textProps) => {
+  const msg = textProps.currentMessage
+  const isAssistant = msg?.user?._id === ASSISTANT._id
+  const text = (msg?.text ?? '').trim()
+  // 自分の発言・空メッセージはデフォルトの MessageText（リンク認識・コピー等の挙動を維持）
+  if (!isAssistant || !text) return <MessageText {...textProps} />
+  return (
+    <View style={chatMarkdownStyles.wrap}>
+      <EnrichedMarkdownText
+        markdown={text}
+        markdownStyle={MARKDOWN_STYLE}
+        flavor="github"
+        allowTrailingMargin={false}
+        selectable
+      />
+    </View>
+  )
+}
+
+const chatMarkdownStyles = StyleSheet.create({
+  wrap: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+})
+
+// Message の親 View にかかっているデフォルト maxWidth: '70%' を 90% に広げる。
+// 食品カードもマークダウン応答も横幅を活かせるようにするため。
+const WIDE_BUBBLE_CONTAINER = {
+  left: { maxWidth: '90%' },
+  right: { maxWidth: '90%' },
+}
+const renderWideMessage = (props) => (
+  <Message {...props} containerStyle={WIDE_BUBBLE_CONTAINER} />
+)
+
+const COACH_SUGGESTIONS = [
+  '今週どうだった？',
+  '今日の調子は？',
+  '何を意識すべき？',
+  '炭水化物多すぎる？',
+  'もう少し痩せるには？',
+  '体重の傾向は？',
+]
 
 const PARSER_SYSTEM_PROMPT = `あなたは食事の記述を構造化データに変換するパーサーです。
 ユーザーが日本語で書いた食事内容を、食品ごとに分解してJSONで出力してください。
@@ -138,6 +210,17 @@ const formatWeightResult = (data, insertedId) => {
   return lines.join('\n')
 }
 
+// コーチ応答の生テキストから <think>...</think> を除去（Qwen3 系で稀に出力される）。
+// ストリーミング途中で未閉じの場合は think 後の文字列を返す（思考中表示を回避）。
+const stripThink = (text) => {
+  if (!text) return ''
+  let out = String(text).replace(/<think>[\s\S]*?<\/think>/g, '')
+  // 開きタグだけ残っている場合は丸ごと隠す
+  const open = out.indexOf('<think>')
+  if (open >= 0) out = out.slice(0, open)
+  return out.trim()
+}
+
 const parseAndEnrich = async (content, idx) => {
   try {
     const parsed = parseFoodOutput(content)
@@ -168,31 +251,98 @@ const parseAndEnrich = async (content, idx) => {
 }
 
 export default function Chat() {
-  const { activeModel } = useActiveModel()
-  // activeModel が変わると useLLM は新しいモデルで再初期化される（hot-swap）。
-  const llm = useLLM({ model: activeModel.source })
+  const {
+    activeModel,
+    currentRole,
+    setCurrentRole,
+    fellBack,
+    dismissFellBack,
+  } = useActiveModel()
+  // llm インスタンスは LLMProvider が起動時から保持しているグローバルなもの。
+  // mode 切替 → setCurrentRole で Provider 側でモデル swap が起き、
+  // llm.isReady が false → true へ遷移する。Chat 側はこの遷移を購読して configure する。
+  const llm = useActiveLLM()
+
+  // 前回のロード未完了が検出された場合、ユーザーに通知
+  useEffect(() => {
+    if (fellBack) {
+      Alert.alert(
+        'モデルを切り戻しました',
+        '前回のモデルロードが完了しませんでした（メモリ不足の可能性）。安全のため軽量モデル（0.6B）に切り戻しました。\n\n別のモデルを使う場合は「設定 > LLM モデル」から再選択してください。',
+        [{ text: 'OK', onPress: dismissFellBack }],
+      )
+    }
+  }, [fellBack, dismissFellBack])
   const [localMessages, setLocalMessages] = useState([])
   const [llmCards, setLlmCards] = useState({}) // { historyIndex: { foodItems? | error? } }
   const [ocrBusy, setOcrBusy] = useState(false)
+  const [mode, setMode] = useState('log') // 'log' | 'coach'
+  const [inputText, setInputText] = useState('')
+  // モード別に messageHistory / llmCards のスナップショットを保持。
+  // モード切替時に「現在モード→保存」「新モード→復元」して configure に渡す。
+  const logHistoryRef = useRef([])
+  const coachHistoryRef = useRef([])
+  const logCardsRef = useRef({})
+  const [modeBusy, setModeBusy] = useState(false)
   const llmTimestampsRef = useRef([])
   const { showActionSheetWithOptions } = useActionSheet()
 
-  // Configure LLM as a structured-output parser once it's ready
+  // mode と llm.isReady の両方を依存にした configure。
+  //   - 初回マウント: mode='log', isReady=true → parser systemPrompt を投入
+  //   - モード切替時: handleSetMode が setMode + setCurrentRole(swap) を呼ぶ
+  //     → モデルが swap される間 isReady=false → swap 完了で isReady=true
+  //     → この useEffect が走り、新モードに合った systemPrompt + 復元履歴で configure
+  //   - 同じモデルを parser/coach に設定している場合は swap が走らないが、
+  //     mode 依存だけで再走するので configure はちゃんと当たる
+  // modeBusy のクリアもここで行う（swap 完了＋configure 完了が揃ったら解除）。
   useEffect(() => {
-    if (llm.isReady) {
-      llm.configure({
-        chatConfig: { systemPrompt: buildSystemPrompt() },
-        generationConfig: { temperature: 0.2 },
-      })
+    if (!llm.isReady) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const restoreHist =
+          mode === 'log' ? logHistoryRef.current : coachHistoryRef.current
+        let systemPrompt
+        let temperature
+        if (mode === 'coach') {
+          const context = await buildCoachingContext()
+          if (cancelled) return
+          systemPrompt = buildCoachSystemPrompt(context)
+          temperature = 0.5
+        } else {
+          systemPrompt = buildSystemPrompt()
+          temperature = 0.2
+        }
+        llm.configure({
+          chatConfig: { systemPrompt, initialMessageHistory: restoreHist },
+          generationConfig: { temperature },
+        })
+        // インデックスが復元履歴に合わせて変わるので、processed セットも合わせる。
+        const newProcessed = new Set()
+        restoreHist.forEach((m, i) => {
+          if (m.role === 'assistant') newProcessed.add(i)
+        })
+        processedRef.current = newProcessed
+      } catch (e) {
+        console.warn('[chat] configure failed:', e)
+      } finally {
+        if (!cancelled) setModeBusy(false)
+      }
+    })()
+    return () => {
+      cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [llm.isReady])
+  }, [llm.isReady, mode])
 
   // Parse any complete assistant messages that haven't been parsed yet
   // (uses processedRef to guard against re-processing in the async window)
   const processedRef = useRef(new Set())
   useEffect(() => {
     if (llm.isGenerating) return
+    // コーチモードでは現在の履歴はすべてコーチ応答（プレーンテキスト表示のみ）。
+    // パース処理はスキップ。
+    if (mode === 'coach') return
     const base = llm.messageHistory.filter((m) => m.role !== 'system')
     base.forEach((m, idx) => {
       if (m.role !== 'assistant') return
@@ -201,6 +351,7 @@ export default function Chat() {
       ;(async () => {
         const userMsg = base[idx - 1]?.content
         console.log('========== Chat log ==========')
+        console.log('[model]', activeModel.id)
         if (userMsg) console.log('[USER]', userMsg)
         console.log('[LLM raw]', m.content)
         const result = await parseAndEnrich(m.content, idx)
@@ -226,7 +377,7 @@ export default function Chat() {
         ).catch(() => {})
       })()
     })
-  }, [llm.messageHistory, llm.isGenerating])
+  }, [llm.messageHistory, llm.isGenerating, mode])
 
   const messages = useMemo(() => {
     const items = []
@@ -242,7 +393,16 @@ export default function Chat() {
         items.push({ _id: `h-${i}`, text: m.content, createdAt, user: USER })
         return
       }
-      // assistant
+      // assistant: 現在のモードで描画方法を決定
+      //   coach → ストリーミング中もプレーンテキストで逐次表示
+      //   log   → パース結果（カード or エラー）を表示
+      if (mode === 'coach') {
+        const cleaned = stripThink(m.content)
+        if (cleaned.length > 0) {
+          items.push({ _id: `h-${i}`, text: cleaned, createdAt, user: ASSISTANT })
+        }
+        return
+      }
       const card = llmCards[i]
       if (card?.foodItems) {
         items.push({
@@ -266,20 +426,77 @@ export default function Chat() {
     const all = [...items, ...localMessages]
     all.sort((a, b) => a.createdAt - b.createdAt)
     return all.reverse()
-  }, [llm.messageHistory, llmCards, localMessages])
+  }, [llm.messageHistory, llmCards, localMessages, mode])
+
+  // モード切り替え: 現在モードのスナップショットを ref に保存し、mode + currentRole を更新。
+  // configure 自体は上の useEffect が isReady の遷移を待って実行する。
+  //   - parser ⇄ coach のモデルが異なる場合: setCurrentRole → Provider が swap → 数秒待ち
+  //   - 同じモデルの場合: swap なし、mode 依存だけで configure が再走
+  // modeBusy は configure useEffect の最後で false に戻る。
+  const handleSetMode = useCallback(
+    async (newMode) => {
+      if (newMode === mode || llm.isGenerating || modeBusy) return
+      // swap 中（isReady=false）に切替を許してしまうと configure useEffect が
+      // 2 回走って後の方が古い履歴で上書きする恐れがあるため、ready 前は弾く。
+      if (!llm.isReady) return
+      setModeBusy(true)
+      try {
+        const currentHist = llm.messageHistory.filter((m) => m.role !== 'system')
+        // 現在モードを保存
+        if (mode === 'log') {
+          logHistoryRef.current = currentHist
+          logCardsRef.current = llmCards
+        } else {
+          coachHistoryRef.current = currentHist
+        }
+        const restoreCards = newMode === 'log' ? logCardsRef.current : {}
+        setLlmCards(restoreCards)
+        setInputText('')
+        setMode(newMode)
+        // ロール切替 → Provider 側で必要ならモデル swap
+        const targetRole = newMode === 'coach' ? 'coach' : 'parser'
+        if (currentRole !== targetRole) {
+          await setCurrentRole(targetRole)
+        }
+        // setModeBusy(false) は configure useEffect 内で
+      } catch (e) {
+        console.warn('[chat] mode switch failed:', e)
+        setModeBusy(false)
+      }
+    },
+    [mode, llm, llmCards, modeBusy, currentRole, setCurrentRole],
+  )
 
   const onSend = useCallback(
-    (sent) => {
+    async (sent) => {
       if (!sent.length) return
       const text = sent[0].text
+      setInputText('')
       if (text.trim() === '/card') {
         setLocalMessages((prev) => [...prev, makeUserMessage(text), makeDummyCardMessage()])
         return
       }
       if (!llm.isReady || llm.isGenerating) return
+
+      // コーチモードのみ、毎回最新の DB コンテキストで再 configure（履歴は維持）。
+      if (mode === 'coach') {
+        try {
+          const preservedHistory = llm.messageHistory.filter((m) => m.role !== 'system')
+          const context = await buildCoachingContext()
+          llm.configure({
+            chatConfig: {
+              systemPrompt: buildCoachSystemPrompt(context),
+              initialMessageHistory: preservedHistory,
+            },
+            generationConfig: { temperature: 0.5 },
+          })
+        } catch (e) {
+          console.warn('[coach] context build failed:', e)
+        }
+      }
       llm.sendMessage(text)
     },
-    [llm],
+    [llm, mode],
   )
 
   // 画像 → OCR → 振り分け → 保存 → 結果表示 の共通ハンドラ。
@@ -300,13 +517,13 @@ export default function Chat() {
 
       let resultText
       if (parsed.kind === 'label') {
-        const id = await insertProductFromLabel(parsed)
+        const id = await insertProductFromLabel(parsed, { imageUri: uri })
         resultText = formatLabelResult(parsed, id)
       } else if (parsed.kind === 'fitness') {
-        const id = await insertEnergyFromFitness(parsed)
+        const id = await insertEnergyFromFitness(parsed, { imageUri: uri })
         resultText = formatFitnessResult(parsed, id)
       } else if (parsed.kind === 'weight') {
-        const id = await insertWeightFromOcr(parsed)
+        const id = await insertWeightFromOcr(parsed, { imageUri: uri })
         resultText = formatWeightResult(parsed, id)
       } else {
         // 振り分け失敗時は生テキストをそのまま表示（手入力フォールバックの足がかり）
@@ -405,40 +622,88 @@ export default function Chat() {
           />
         )
       }
-      return <Bubble {...props} />
+      return <Bubble {...props} renderMessageText={renderAssistantMarkdown} />
     },
     [updateFoodItem],
   )
 
   const renderChatEmpty = useCallback(
-    () => (
-      <View style={styles.emptyWrap}>
-        <Text style={styles.emptyText}>食べたものを送ると、自動で分解してカードにします。</Text>
+    () => {
+      if (mode === 'coach') {
+        return (
+          <View style={styles.emptyWrap}>
+            <Text style={styles.emptyText}>
+              あなたの記録（食事・運動・体重）をもとに、コーチが日本語で答えます。
+            </Text>
+            <Text style={styles.captionText}>下の質問例から選ぶか、自由に入力してください。</Text>
+            <Text style={styles.captionText}>※ 医療的な判断はしません。</Text>
+          </View>
+        )
+      }
+      return (
+        <View style={styles.emptyWrap}>
+          <Text style={styles.emptyText}>食べたものを送ると、自動で分解してカードにします。</Text>
 
-        <Text style={styles.sectionLabel}>おすすめの書き方（精度が高い）</Text>
-        <View style={styles.exampleBlock}>
-          <Text style={styles.exampleLine}>・プレーンヨーグルト200g</Text>
-          <Text style={styles.exampleLine}>・リンゴ1個</Text>
-          <Text style={styles.exampleLine}>・コーヒー1杯</Text>
+          <Text style={styles.sectionLabel}>おすすめの書き方（精度が高い）</Text>
+          <View style={styles.exampleBlock}>
+            <Text style={styles.exampleLine}>・プレーンヨーグルト200g</Text>
+            <Text style={styles.exampleLine}>・リンゴ1個</Text>
+            <Text style={styles.exampleLine}>・コーヒー1杯</Text>
+          </View>
+          <Text style={styles.captionText}>1行に1品ずつ、改行で区切ると最も正確です。</Text>
+
+          <Text style={styles.sectionLabel}>簡単な書き方（短文）</Text>
+          <View style={styles.exampleBlock}>
+            <Text style={styles.exampleLine}>カツ丼と缶チューハイ2本</Text>
+            <Text style={styles.exampleLine}>ごはん大盛りと焼き魚</Text>
+          </View>
+          <Text style={styles.captionText}>「〜と〜」でつないでも OK。短いほど精度が上がります。</Text>
+
+          <Text style={styles.sectionLabel}>コツ</Text>
+          <Text style={styles.captionText}>・数量と単位を書く（例: 食パン1枚、缶チューハイ2本、ささみ200g）</Text>
+          <Text style={styles.captionText}>・「大盛り」「少なめ」などのニュアンスも書ける</Text>
+
+          <Text style={styles.emptyHintDev}>（開発用）`/card` でサンプル食品カードを表示</Text>
         </View>
-        <Text style={styles.captionText}>1行に1品ずつ、改行で区切ると最も正確です。</Text>
-
-        <Text style={styles.sectionLabel}>簡単な書き方（短文）</Text>
-        <View style={styles.exampleBlock}>
-          <Text style={styles.exampleLine}>カツ丼と缶チューハイ2本</Text>
-          <Text style={styles.exampleLine}>ごはん大盛りと焼き魚</Text>
-        </View>
-        <Text style={styles.captionText}>「〜と〜」でつないでも OK。短いほど精度が上がります。</Text>
-
-        <Text style={styles.sectionLabel}>コツ</Text>
-        <Text style={styles.captionText}>・数量と単位を書く（例: 食パン1枚、缶チューハイ2本、ささみ200g）</Text>
-        <Text style={styles.captionText}>・「大盛り」「少なめ」などのニュアンスも書ける</Text>
-
-        <Text style={styles.emptyHintDev}>（開発用）`/card` でサンプル食品カードを表示</Text>
-      </View>
-    ),
-    [],
+      )
+    },
+    [mode],
   )
+
+  // GiftedChat 内蔵 Composer は内部で lineHeight: 22 を設定するうえ、react-native-gesture-handler の
+  // TextInput を使っている。これが Android で日本語 IME 未確定文字の下線を消す原因になるため、
+  // 素の react-native TextInput で同等機能を再現する。
+  const renderComposer = useCallback((props) => {
+    const tiProps = props.textInputProps ?? {}
+    const { style: extraStyle, onChangeText: extOnChangeText, ...restTextInputProps } = tiProps
+
+    const handleChangeText = (txt) => {
+      extOnChangeText?.(txt)
+      props.onTextChanged?.(txt)
+    }
+    const handleContentSizeChange = (e) => {
+      const { contentSize } = e.nativeEvent
+      props.onInputSizeChanged?.({ width: contentSize.width, height: contentSize.height })
+    }
+    return (
+      <TextInput
+        {...restTextInputProps}
+        multiline
+        underlineColorAndroid="transparent"
+        enablesReturnKeyAutomatically
+        placeholder={props.placeholder}
+        placeholderTextColor={tiProps.placeholderTextColor ?? colors.gray}
+        value={props.text}
+        onChangeText={handleChangeText}
+        onContentSizeChange={handleContentSizeChange}
+        style={[
+          styles.composerInput,
+          { height: props.composerHeight },
+          extraStyle,
+        ]}
+      />
+    )
+  }, [])
 
   if (llm.error) {
     return (
@@ -477,23 +742,100 @@ export default function Chat() {
         messages={messages}
         onSend={onSend}
         user={USER}
-        placeholder="メッセージを入力"
+        text={inputText}
+        placeholder={mode === 'coach' ? 'コーチに質問する（例: 今週どうだった？）' : '食べたものを入力'}
         isTyping={llm.isGenerating}
         minComposerHeight={48}
+        renderMessage={renderWideMessage}
         renderBubble={renderBubble}
         renderActions={renderActions}
         renderAvatar={null}
         renderChatEmpty={renderChatEmpty}
         renderInputToolbar={(props) => (
-          <InputToolbar
-            {...props}
-            containerStyle={styles.inputToolbar}
-          />
+          <View>
+            {mode === 'coach' && (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.suggestionRow}
+              >
+                {COACH_SUGGESTIONS.map((s) => (
+                  <TouchableOpacity
+                    key={s}
+                    onPress={() => setInputText(s)}
+                    style={styles.suggestionChip}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.suggestionText}>{s}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
+            <View style={styles.modeBar}>
+              <TouchableOpacity
+                onPress={() => handleSetMode('log')}
+                disabled={modeBusy || llm.isGenerating}
+                style={[
+                  styles.modeBtn,
+                  mode === 'log' && styles.modeBtnActive,
+                  (modeBusy || llm.isGenerating) && styles.modeBtnDisabled,
+                ]}
+                activeOpacity={0.7}
+              >
+                <FontIcon
+                  name="pencil"
+                  size={12}
+                  color={mode === 'log' ? colors.white : colors.darkPurple}
+                />
+                <Text style={[styles.modeBtnText, mode === 'log' && styles.modeBtnTextActive]}>
+                  記録
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => handleSetMode('coach')}
+                disabled={modeBusy || llm.isGenerating}
+                style={[
+                  styles.modeBtn,
+                  mode === 'coach' && styles.modeBtnActive,
+                  (modeBusy || llm.isGenerating) && styles.modeBtnDisabled,
+                ]}
+                activeOpacity={0.7}
+              >
+                <FontIcon
+                  name="comments-o"
+                  size={12}
+                  color={mode === 'coach' ? colors.white : colors.darkPurple}
+                />
+                <Text style={[styles.modeBtnText, mode === 'coach' && styles.modeBtnTextActive]}>
+                  コーチに聞く
+                </Text>
+              </TouchableOpacity>
+              {modeBusy && (
+                <ActivityIndicator size="small" color={colors.lightPurple} style={{ marginLeft: 8 }} />
+              )}
+            </View>
+            <InputToolbar
+              {...props}
+              containerStyle={styles.inputToolbar}
+              renderComposer={renderComposer}
+            />
+          </View>
         )}
         textInputProps={{
           editable: !llm.isGenerating,
           placeholderTextColor: colors.gray,
           style: styles.textInput,
+          onChangeText: setInputText,
+        }}
+        renderSend={(props) => {
+          const enabled = !!props.text?.trim()
+          return (
+            <Send {...props} containerStyle={styles.sendContainer} disabled={!enabled}>
+              <View style={[styles.sendCircle, !enabled && styles.sendCircleDisabled]}>
+                <FontIcon name="chevron-up" size={14} color={colors.white} />
+              </View>
+            </Send>
+          )
         }}
         alwaysShowSend
       />
@@ -538,6 +880,75 @@ const styles = StyleSheet.create({
     backgroundColor: colors.white,
     borderTopColor: colors.grayFifth,
   },
+  modeBar: {
+    flexDirection: 'row',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#f7f6fb',
+    borderTopWidth: 1,
+    borderTopColor: '#e5e2f0',
+    gap: 8,
+  },
+  modeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    backgroundColor: '#e5e2f0',
+  },
+  modeBtnActive: {
+    backgroundColor: colors.lightPurple,
+  },
+  modeBtnText: {
+    fontSize: fontSize.small,
+    color: colors.darkPurple,
+    marginLeft: 6,
+    fontWeight: '600',
+  },
+  modeBtnTextActive: {
+    color: colors.white,
+  },
+  suggestionRow: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 8,
+    backgroundColor: '#fafafe',
+    borderTopWidth: 1,
+    borderTopColor: '#e5e2f0',
+  },
+  suggestionChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: '#dcd9ec',
+  },
+  suggestionText: {
+    fontSize: fontSize.small,
+    color: colors.darkPurple,
+  },
+  sendContainer: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sendCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.lightPurple,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sendCircleDisabled: {
+    backgroundColor: '#dcd9ec',
+  },
+  modeBtnDisabled: {
+    opacity: 0.5,
+  },
   attachButton: {
     width: 44,
     height: 44,
@@ -548,6 +959,17 @@ const styles = StyleSheet.create({
     color: colors.black,
     backgroundColor: colors.white,
     fontSize: fontSize.middle,
+  },
+  // 自前 Composer 用。lineHeight は意図的に指定しない（Android の IME 未確定下線が消えるため）
+  composerInput: {
+    flex: 1,
+    color: colors.black,
+    backgroundColor: colors.white,
+    fontSize: fontSize.middle,
+    paddingTop: 8,
+    paddingBottom: 10,
+    paddingHorizontal: 8,
+    textAlignVertical: 'top',
   },
   emptyWrap: {
     flex: 1,

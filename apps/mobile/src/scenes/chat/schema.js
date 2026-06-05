@@ -43,6 +43,46 @@ const extractBetweenBrackets = (text) => {
   return text.slice(text.indexOf(opening), text.lastIndexOf(closing) + 1)
 }
 
+// 一部の小型 LLM は name / quantity / unit を {"name": {"name": "ささみ"}} のように
+// 同名キーで何重にもネストして返してくる。生のフィルタだと全件落ちるので、
+// 再帰的に最深部のプリミティブを取り出して救済する。
+const coercePrimitive = (value, key, maxDepth = 5) => {
+  let cur = value
+  for (let i = 0; i < maxDepth; i += 1) {
+    if (cur == null) return null
+    if (typeof cur === 'string' || typeof cur === 'number') return cur
+    if (typeof cur === 'object' && !Array.isArray(cur) && key in cur) {
+      cur = cur[key]
+      continue
+    }
+    return null
+  }
+  return null
+}
+
+const coerceName = (raw) => {
+  const v = coercePrimitive(raw, 'name')
+  if (typeof v === 'string') return v.trim() || null
+  if (typeof v === 'number') return String(v)
+  return null
+}
+
+const coerceQuantity = (raw) => {
+  const v = coercePrimitive(raw, 'quantity')
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  if (typeof v === 'string') {
+    const n = parseFloat(v)
+    if (!Number.isNaN(n)) return n
+  }
+  return null
+}
+
+const coerceUnit = (raw) => {
+  const v = coercePrimitive(raw, 'unit')
+  if (typeof v === 'string' && v.length > 0) return v
+  return null
+}
+
 // executorch の fixAndValidateStructuredOutput と同様の処理（zod を介さず手書き）。
 // モデルが {"items":[...]} を返さず [...] だけを返すケースもよくあるので両方受け入れる。
 export const parseFoodOutput = (rawOutput) => {
@@ -54,13 +94,18 @@ export const parseFoodOutput = (rawOutput) => {
     throw new Error('items 配列が見つかりません')
   }
   const items = itemsArray
-    .filter((it) => it && typeof it.name === 'string' && it.name.length > 0)
-    .map((it) => ({
-      name: String(it.name),
-      quantity: typeof it.quantity === 'number' ? it.quantity : 1,
-      unit: typeof it.unit === 'string' && it.unit.length > 0 ? it.unit : '人前',
-      portion: typeof it.portion === 'string' ? it.portion : undefined,
-    }))
+    .map((it) => {
+      if (!it || typeof it !== 'object') return null
+      const name = coerceName(it.name)
+      if (!name) return null
+      return {
+        name,
+        quantity: coerceQuantity(it.quantity) ?? 1,
+        unit: coerceUnit(it.unit) ?? '人前',
+        portion: typeof it.portion === 'string' ? it.portion : undefined,
+      }
+    })
+    .filter(Boolean)
   if (items.length === 0) {
     throw new Error('有効な食品が抽出できませんでした')
   }

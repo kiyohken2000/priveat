@@ -1,7 +1,7 @@
 import { getDb } from './index'
 
-const PORTION_FACTORS = { small: 0.7, normal: 1.0, large: 1.3 }
-const portionFactor = (p) => PORTION_FACTORS[p] ?? 1.0
+export const PORTION_FACTORS = { small: 0.7, normal: 1.0, large: 1.3 }
+export const portionFactor = (p) => PORTION_FACTORS[p] ?? 1.0
 
 // items 配列を food_log にまとめて INSERT する。
 //

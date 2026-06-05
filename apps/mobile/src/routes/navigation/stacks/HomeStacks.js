@@ -3,6 +3,7 @@ import { createStackNavigator } from '@react-navigation/stack'
 import { navigationProps } from './navigationProps/navigationProps'
 
 import Home from '../../../scenes/home/Home'
+import EditFoodScreen from '../../../scenes/history/EditFoodScreen'
 
 const Stack = createStackNavigator()
 
@@ -18,6 +19,11 @@ export const HomeStacks = () => (
         title: 'ホーム',
         headerShown: false,
       }}
+    />
+    <Stack.Screen
+      name="EditFoodScreen"
+      component={EditFoodScreen}
+      options={{ title: '食事を編集' }}
     />
   </Stack.Navigator>
 )

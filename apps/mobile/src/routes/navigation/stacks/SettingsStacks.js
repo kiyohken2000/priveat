@@ -6,6 +6,7 @@ import SettingsHome from '../../../scenes/settings/SettingsHome'
 import ProfileScreen from '../../../scenes/settings/ProfileScreen'
 import ModelScreen from '../../../scenes/settings/ModelScreen'
 import HealthScreen from '../../../scenes/settings/HealthScreen'
+import StanceScreen from '../../../scenes/settings/StanceScreen'
 
 const Stack = createStackNavigator()
 
@@ -36,6 +37,11 @@ export const SettingsStacks = () => (
       name="HealthScreen"
       component={HealthScreen}
       options={{ title: 'ヘルス連携' }}
+    />
+    <Stack.Screen
+      name="StanceScreen"
+      component={StanceScreen}
+      options={{ title: 'コーチへの指示' }}
     />
   </Stack.Navigator>
 )

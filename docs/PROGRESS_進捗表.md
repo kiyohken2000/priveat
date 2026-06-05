@@ -196,3 +196,32 @@
 ## メモ・課題（随時追記）
 
 -
+
+### 将来やりたい機能（後回し）
+
+- **今日のサマリーや履歴の日詳細に「AI からのアドバイス」を表示したい**
+  - 設定 → コーチへの指示 (StanceScreen) で入力したスタンスを踏まえて、ホーム画面の今日サマリー / 履歴の DayDetail にコーチ応答を埋め込み表示する。
+  - 設計検討事項:
+    - 生成タイミング（画面を開いた時に都度生成 / バックグラウンドで先回り生成 / 手動更新ボタン）
+    - キャッシュ戦略（同じ日のアドバイスを再生成し続けるのを避ける）
+    - parser モデルがロード中（記録用がアクティブ）の時に coach モデルへの swap をどう扱うか
+    - 応答は EnrichedMarkdownText で描画（チャット側と統一）
+  - 関連: `apps/mobile/src/coaching/context.js` の buildCoachingContext と `prompts.js` の buildCoachSystemPrompt を流用。Day 単位用のコンテキストビルダーを別途用意する手もあり。
+
+### 既知の不具合（後回しでよい）
+
+- **TextInput の IME 未確定文字の下線が出ない**（iOS / Android 両方、全 TextInput が対象）
+  - 症状: 日本語入力中、変換確定前の文字の下に表示されるはずの下線（コンポジション underline）が描画されない。プロフィール画面の 1 行 TextInput でも StanceScreen / Chat の multiline でも同じ。
+  - 致命的ではない（入力・送信は正常）ので後回し。
+  - 切り分け済み:
+    - 個別画面の `lineHeight` や `textAlignVertical` を消しても改善しない（アプリ全体の症状なのでスタイル起因ではない）
+    - `react-native-keyboard-controller` は依存にあるだけで `KeyboardProvider` ラップ無し（除外）
+    - GiftedChat の内蔵 Composer は `lineHeight: 22` を持ち、かつ `react-native-gesture-handler` の TextInput を使っていたため Chat では自前 Composer (`renderComposer`) に置き換え済み（StanceScreen 含め保険として残置）
+  - 原因候補:
+    1. RN 0.85 + 新アーキ (Fabric) の TextInput コンポジション描画リグレッション（最有力）
+    2. React 19.2 との組み合わせ
+    3. `react-native-reanimated` 4.x / `react-native-screens` 等の Fabric 実装が干渉
+  - 次にやる時の入り口:
+    - WebSearch で `react-native 0.85 fabric composition underline ime` の既知 issue 確認
+    - `app.json` で新アーキを一時 OFF にした dev build で再現するか
+    - 最小再現アプリで切り分け

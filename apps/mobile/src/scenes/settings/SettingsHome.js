@@ -1,12 +1,14 @@
 import { useNavigation } from '@react-navigation/native'
 import React from 'react'
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
 import ScreenTemplate from '../../components/ScreenTemplate'
 import { colors, fontSize } from '../../theme'
+import { images } from '../../theme/images'
+import { version } from '../../config'
 import { useActiveModel } from '../../state/modelContext'
 
-const Row = ({ icon, title, subtitle, onPress }) => (
+const Row = ({ icon, title, subtitle, subtitleLines = 1, onPress }) => (
   <Pressable
     onPress={onPress}
     style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
@@ -16,7 +18,11 @@ const Row = ({ icon, title, subtitle, onPress }) => (
     </View>
     <View style={styles.rowMain}>
       <Text style={styles.rowTitle}>{title}</Text>
-      {subtitle ? <Text style={styles.rowSubtitle} numberOfLines={1}>{subtitle}</Text> : null}
+      {subtitle ? (
+        <Text style={styles.rowSubtitle} numberOfLines={subtitleLines}>
+          {subtitle}
+        </Text>
+      ) : null}
     </View>
     <FontIcon name="chevron-right" size={14} color={colors.gray} />
   </Pressable>
@@ -24,7 +30,7 @@ const Row = ({ icon, title, subtitle, onPress }) => (
 
 export default function SettingsHome() {
   const navigation = useNavigation()
-  const { activeModel } = useActiveModel()
+  const { parserModel, coachModel } = useActiveModel()
 
   return (
     <ScreenTemplate>
@@ -40,9 +46,17 @@ export default function SettingsHome() {
           />
           <View style={styles.divider} />
           <Row
+            icon="commenting-o"
+            title="コーチへの指示"
+            subtitle="目標・アドバイスの傾向などを自由文で"
+            onPress={() => navigation.navigate('StanceScreen')}
+          />
+          <View style={styles.divider} />
+          <Row
             icon="microchip"
             title="LLM モデル"
-            subtitle={`現在: ${activeModel.label}`}
+            subtitle={`記録: ${parserModel.label}\nコーチ: ${coachModel.label}`}
+            subtitleLines={2}
             onPress={() => navigation.navigate('ModelScreen')}
           />
           <View style={styles.divider} />
@@ -52,6 +66,12 @@ export default function SettingsHome() {
             subtitle="HealthKit / Health Connect"
             onPress={() => navigation.navigate('HealthScreen')}
           />
+        </View>
+
+        <View style={styles.about}>
+          <Image source={images.logo_sm} style={styles.aboutLogo} resizeMode="contain" />
+          <Text style={styles.aboutAppName}>Priveat</Text>
+          <Text style={styles.aboutVersion}>バージョン {version}</Text>
         </View>
       </ScrollView>
     </ScreenTemplate>
@@ -98,5 +118,26 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#f0eef7',
     marginLeft: 58,
+  },
+  about: {
+    alignItems: 'center',
+    marginTop: 32,
+    paddingVertical: 20,
+  },
+  aboutLogo: {
+    width: 56,
+    height: 56,
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  aboutAppName: {
+    fontSize: fontSize.middle,
+    color: colors.darkPurple,
+    fontWeight: '600',
+  },
+  aboutVersion: {
+    fontSize: fontSize.small,
+    color: colors.gray,
+    marginTop: 2,
   },
 })

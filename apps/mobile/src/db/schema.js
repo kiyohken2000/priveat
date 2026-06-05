@@ -101,6 +101,17 @@ export const MIGRATIONS = [
       );
     `,
   },
+  // v2: OCR の入力画像パスを保持するための image_uri 列を追加。
+  //   後でユーザーが履歴から「どの画像を読んだか」を確認できるようにするため。
+  //   既存行は NULL のままで OK（画像なし表示）。
+  {
+    version: 2,
+    sql: `
+      ALTER TABLE weight_log ADD COLUMN image_uri TEXT;
+      ALTER TABLE energy_log ADD COLUMN image_uri TEXT;
+      ALTER TABLE products   ADD COLUMN image_uri TEXT;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version

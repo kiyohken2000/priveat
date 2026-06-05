@@ -1,5 +1,5 @@
 import React from 'react'
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native'
+import { StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native'
 import { colors, fontSize } from '../../theme'
 
 const PORTIONS = [
@@ -27,9 +27,15 @@ export default function FoodCard({ message, onUpdateItem, title }) {
   const hasUnknownKcal = kcals.some((k) => k == null)
   const totalKcal = kcals.reduce((sum, k) => sum + (k ?? 0), 0)
   const dailyTarget = message.dailyTotal?.target
+  // Message container の maxWidth: 90% に追従しつつ、内部コンテンツ依存で縮まないよう
+  // 画面幅から固定幅を計算する（gifted-chat の Bubble は文字列が押し広げる前提だが、
+  // FoodCard は固定要素しかなく自然幅が小さくなるため）。
+  const { width: screenWidth } = useWindowDimensions()
+  // Message container は maxWidth: 90%。それを超えないよう少し小さめで固定。
+  const cardWidth = Math.floor(screenWidth * 0.85)
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, { width: cardWidth }]}>
       {title ? <Text style={styles.title}>{title}</Text> : null}
       {items.map((item, i) => {
         const meta = portionMeta(item.portion)
@@ -79,7 +85,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.lightGrayPurple,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.grayFifth,
-    maxWidth: 320,
   },
   title: {
     fontSize: fontSize.small,
