@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Pressable,
@@ -6,11 +6,13 @@ import {
   Text,
   View,
 } from 'react-native'
+import LottieView from 'lottie-react-native'
 import { EnrichedMarkdownText } from 'react-native-enriched-markdown'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
 import { colors, fontSize } from '../theme'
 import { useActiveLLM, useActiveModel } from '../state/modelContext'
 import { generateAdvice, inspectAdvice } from '../coaching/advice'
+import { pickMascotForDate } from '../coaching/mascot'
 
 // Today (Home) / 過去日 (DayDetail) 共通の AI アドバイス表示カード。
 //
@@ -57,6 +59,9 @@ export default function AdviceCard({ date, kind = 'today' }) {
   const [loadingInspect, setLoadingInspect] = useState(true)
   const [phase, setPhase] = useState('idle') // 'idle' | 'awaiting-swap' | 'generating' | 'error'
   const [error, setError] = useState(null)
+
+  // 日付ごとに同じマスコットが出るようにする (同じ日に何度開いても顔が変わらない)。
+  const mascotSource = useMemo(() => pickMascotForDate(date), [date])
 
   // 「ユーザーがボタンを押した」フラグ。setCurrentRole の swap 完了 (isReady) を
   // 待ってから generate を 1 回だけ走らせるためのトリガ。
@@ -153,6 +158,40 @@ export default function AdviceCard({ date, kind = 'today' }) {
   const workingLabel =
     phase === 'awaiting-swap' ? 'コーチモデルを準備中...' : 'アドバイスを生成中...'
 
+  // 吹き出し内に何を表示するか。working > cached > placeholder の優先度。
+  const renderBubbleContent = () => {
+    if (isWorking) {
+      return (
+        <View style={styles.workingRow}>
+          <ActivityIndicator size="small" color={colors.lightPurple} />
+          <Text style={styles.workingText}>{workingLabel}</Text>
+        </View>
+      )
+    }
+    if (showCached) {
+      return (
+        <>
+          <EnrichedMarkdownText
+            markdown={cached.advice_text}
+            markdownStyle={MARKDOWN_STYLE}
+            flavor="github"
+            allowTrailingMargin={false}
+            selectable
+          />
+          <Text style={styles.meta}>
+            {formatGeneratedAt(cached.generated_at)} · {cached.model_id ?? '不明モデル'}
+          </Text>
+        </>
+      )
+    }
+    return (
+      <Text style={styles.placeholder}>
+        ボタンを押すとコーチモデル ({coachModel?.label ?? '未選択'}) で
+        短いアドバイスを生成するよ。
+      </Text>
+    )
+  }
+
   return (
     <View style={styles.card}>
       <View style={styles.headerRow}>
@@ -165,25 +204,22 @@ export default function AdviceCard({ date, kind = 'today' }) {
         )}
       </View>
 
-      {showCached ? (
-        <View style={styles.body}>
-          <EnrichedMarkdownText
-            markdown={cached.advice_text}
-            markdownStyle={MARKDOWN_STYLE}
-            flavor="github"
-            allowTrailingMargin={false}
-            selectable
+      <View style={styles.speechRow}>
+        <View style={styles.mascotWrap}>
+          <LottieView
+            source={mascotSource}
+            style={styles.mascot}
+            autoPlay
+            loop
           />
-          <Text style={styles.meta}>
-            {formatGeneratedAt(cached.generated_at)} · {cached.model_id ?? '不明モデル'}
-          </Text>
         </View>
-      ) : (
-        <Text style={styles.placeholder}>
-          ボタンを押すとコーチモデル ({coachModel?.label ?? '未選択'}) で
-          短いアドバイスを生成します。
-        </Text>
-      )}
+        <View style={styles.bubbleWrap}>
+          <View style={styles.bubbleTail} />
+          <View style={styles.bubble}>
+            {renderBubbleContent()}
+          </View>
+        </View>
+      </View>
 
       {error ? <Text style={styles.errorText}>エラー: {error}</Text> : null}
 
@@ -247,17 +283,63 @@ const styles = StyleSheet.create({
     borderColor: '#ffb74d',
   },
   staleBadgeText: { fontSize: 10, color: '#e65100' },
-  body: {
+  speechRow: {
+    // 縦並び。マスコットは左寄せにして、吹き出しのしっぽがマスコット中央を指すように配置する。
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    marginBottom: 8,
+  },
+  mascotWrap: {
+    width: 140,
+    height: 140,
+    alignSelf: 'center',
+  },
+  mascot: {
+    width: 140,
+    height: 140,
+  },
+  bubbleWrap: {
+    position: 'relative',
+    // mascot とくっつきすぎないよう少し離す (tail の出っ張り 8px 含む)。
+    marginTop: 2,
+  },
+  // 吹き出し本体。背景色は単色で、しっぽ (bubbleTail) と同じ色を使う。
+  bubble: {
     backgroundColor: '#fafafe',
-    borderRadius: 8,
+    borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    marginBottom: 8,
+    minHeight: 60,
+    justifyContent: 'center',
+  },
+  // 吹き出しの「しっぽ」: 上向きの三角形 (マスコットを指す)。
+  // mascot が中央寄せなので、吹き出し中央 (= mascot 中央) に来るよう left:50% + marginLeft:-8。
+  bubbleTail: {
+    position: 'absolute',
+    top: -7,
+    left: '50%',
+    marginLeft: -8,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 8,
+    borderRightWidth: 8,
+    borderBottomWidth: 8,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: '#fafafe',
+  },
+  workingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  workingText: {
+    fontSize: fontSize.small,
+    color: colors.gray,
   },
   placeholder: {
     fontSize: fontSize.small,
     color: colors.gray,
-    marginBottom: 8,
     lineHeight: 18,
   },
   meta: {
