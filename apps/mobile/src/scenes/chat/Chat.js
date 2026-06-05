@@ -1085,26 +1085,38 @@ export default function Chat() {
       }
       return (
         <View style={styles.emptyWrap}>
-          <Text style={styles.emptyText}>食べたものを送ると、自動で分解してカードにします。</Text>
+          <Text style={styles.emptyText}>
+            食事・体重・運動を送ると、自動で分解してカードにします。
+          </Text>
 
-          <Text style={styles.sectionLabel}>おすすめの書き方（精度が高い）</Text>
+          <Text style={styles.sectionLabel}>🍱 食事</Text>
           <View style={styles.exampleBlock}>
             <Text style={styles.exampleLine}>・プレーンヨーグルト200g</Text>
-            <Text style={styles.exampleLine}>・リンゴ1個</Text>
-            <Text style={styles.exampleLine}>・コーヒー1杯</Text>
+            <Text style={styles.exampleLine}>・カツ丼と缶チューハイ2本</Text>
+            <Text style={styles.exampleLine}>・ごはん大盛りと焼き魚</Text>
           </View>
-          <Text style={styles.captionText}>1行に1品ずつ、改行で区切ると最も正確です。</Text>
+          <Text style={styles.captionText}>
+            数量と単位を書くと正確 (食パン1枚、ささみ200g)。「大盛り」「少なめ」も OK。
+          </Text>
 
-          <Text style={styles.sectionLabel}>簡単な書き方（短文）</Text>
+          <Text style={styles.sectionLabel}>⚖ 体重</Text>
           <View style={styles.exampleBlock}>
-            <Text style={styles.exampleLine}>カツ丼と缶チューハイ2本</Text>
-            <Text style={styles.exampleLine}>ごはん大盛りと焼き魚</Text>
+            <Text style={styles.exampleLine}>・体重68.5kg</Text>
+            <Text style={styles.exampleLine}>・今朝70.2</Text>
           </View>
-          <Text style={styles.captionText}>「〜と〜」でつないでも OK。短いほど精度が上がります。</Text>
 
-          <Text style={styles.sectionLabel}>コツ</Text>
-          <Text style={styles.captionText}>・数量と単位を書く（例: 食パン1枚、缶チューハイ2本、ささみ200g）</Text>
-          <Text style={styles.captionText}>・「大盛り」「少なめ」などのニュアンスも書ける</Text>
+          <Text style={styles.sectionLabel}>🏃 運動</Text>
+          <View style={styles.exampleBlock}>
+            <Text style={styles.exampleLine}>・ランニング60分</Text>
+            <Text style={styles.exampleLine}>・2キロ歩いた</Text>
+            <Text style={styles.exampleLine}>・30分自転車</Text>
+          </View>
+          <Text style={styles.captionText}>「分」「時間」「km」「キロ」を含めると認識されます。</Text>
+
+          <Text style={styles.sectionLabel}>📷 スクショ・写真</Text>
+          <Text style={styles.captionText}>
+            左下のカメラから、食品ラベル・体重計・フィットネスアプリのスクショを OCR で読み取れます。
+          </Text>
 
           <Text style={styles.emptyHintDev}>（開発用）`/card` でサンプル食品カードを表示</Text>
         </View>
@@ -1186,7 +1198,7 @@ export default function Chat() {
         onSend={onSend}
         user={USER}
         text={inputText}
-        placeholder={mode === 'coach' ? 'コーチに質問する（例: 今週どうだった？）' : '食べたものを入力'}
+        placeholder={mode === 'coach' ? 'コーチに質問する（例: 今週どうだった？）' : '食事・体重・運動を入力'}
         isTyping={llm.isGenerating}
         minComposerHeight={48}
         renderMessage={renderWideMessage}

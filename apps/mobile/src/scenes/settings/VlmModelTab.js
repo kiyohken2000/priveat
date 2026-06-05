@@ -215,6 +215,15 @@ export default function VlmModelTab() {
               {isDownloaded ? '  ・  ✓ ダウンロード済み' : ''}
             </Text>
 
+            {/* parser/coach タブと揃えた「待機中」ステータス。
+                VLM は常駐ではなく写真撮影時のみロードする経路なので、
+                選択済みの状態は実質「待機中」になる。 */}
+            {isSelected && vlmEnabled && (
+              <Text style={styles.statusIdle}>
+                ⏸ 待機中（写真撮影時にロードされます）
+              </Text>
+            )}
+
             {unsupported && <Text style={styles.cardWarn}>⚠ {compat.reason}</Text>}
 
             {isDownloading && (
@@ -366,6 +375,11 @@ const styles = StyleSheet.create({
   badgeTextUnsupported: { color: '#a33' },
   cardDesc: { fontSize: fontSize.middle, color: colors.darkPurple, marginBottom: 4, lineHeight: 20 },
   cardMeta: { fontSize: fontSize.small, color: colors.gray },
+  statusIdle: {
+    marginTop: 8,
+    fontSize: fontSize.small,
+    color: colors.gray,
+  },
   cardWarn: { fontSize: fontSize.small, color: '#a33', marginTop: 6 },
   progressWrap: { marginTop: 10, flexDirection: 'row', alignItems: 'center' },
   progressTrack: {
