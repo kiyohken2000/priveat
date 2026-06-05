@@ -28,7 +28,11 @@ import { getRecordSchemaPrompt, normalizePortion, parseRecordOutput } from './sc
 import { computeKcalFromMatch, findBestFood } from '../../db/search'
 import { countFoodLog, insertFoodLogFromLabel, insertFoodLogItems } from '../../db/foodLog'
 import { insertCoachExchange } from '../../db/chatMessages'
+import * as ImageManipulator from 'expo-image-manipulator'
 import { captureFromCamera, pickFromLibrary, runOcr } from './imageOcr'
+import { getVlmModelById } from '../../data/llmModelsVlm'
+import { isVlmModelDownloaded } from '../../services/vlmModelStorage'
+import { runWithLlamaRn } from '../../state/vlmOrchestrator'
 import { detectAndParse } from './ocrParsers'
 import { insertEnergyFromFitness, insertEnergyLog, insertProductFromLabel, insertWeightLog } from '../../db/ocrLogs'
 import { getLatestWeight } from '../../db/profile'
@@ -105,6 +109,18 @@ const COACH_SUGGESTIONS = [
   '体重の傾向は？',
 ]
 
+
+// 料理写真認識用 (VLM / llama.rn 経路) のプロンプト。
+// 出力は「料理名のカンマ区切り」だけを期待。量/カロリーは別途 FoodCard で編集する。
+const VLM_SYSTEM_PROMPT = `あなたは料理写真を見て「料理名」だけを答えるアシスタントです。
+
+ルール:
+- 一般的な日本語の料理名で答える (例: カツ丼、ラーメン、みそ汁)
+- 写真に複数の料理が写っていれば、カンマ区切りで列挙
+- 料理名以外 (量、kcal、説明、感想) は絶対に書かない
+- 判別できなければ「不明」とだけ書く`
+
+const VLM_USER_QUERY = 'この写真の料理名を答えてください。'
 
 const PARSER_SYSTEM_PROMPT = `あなたはユーザーの記録メッセージを構造化データに変換するパーサーです。
 ユーザーが日本語で書いた内容を、種類(kind)に応じてJSONで出力してください。
@@ -397,13 +413,18 @@ const parseAndDispatch = async (content, idx) => {
 }
 
 export default function Chat() {
+  // VLM orchestrator が modelContext オブジェクト全体を必要とする
+  // (preventLlmLoad を切り替えるため) ので、destructure と別に変数で持つ。
+  const modelCtx = useActiveModel()
   const {
     activeModel,
     currentRole,
     setCurrentRole,
     fellBack,
     dismissFellBack,
-  } = useActiveModel()
+    vlmEnabled,
+    vlmModelId,
+  } = modelCtx
   // llm インスタンスは LLMProvider が起動時から保持しているグローバルなもの。
   // mode 切替 → setCurrentRole で Provider 側でモデル swap が起き、
   // llm.isReady が false → true へ遷移する。Chat 側はこの遷移を購読して configure する。
@@ -422,6 +443,7 @@ export default function Chat() {
   const [localMessages, setLocalMessages] = useState([])
   const [llmCards, setLlmCards] = useState({}) // { historyIndex: { foodItems? | error? } }
   const [ocrBusy, setOcrBusy] = useState(false)
+  const [visionBusy, setVisionBusy] = useState(false)
   const [mode, setMode] = useState('log') // 'log' | 'coach'
 
   // llm の最新参照を ref で保持。async 経路から現行 isReady などを見るために使う
@@ -805,18 +827,96 @@ export default function Chat() {
     }
   }, [ocrBusy])
 
-  // 料理写真 → VLM 経路。
-  //   現在は disable 中。executorch v0.9.0 の LFM2.5-VL-450M で iOS の native
-  //   `runner_->generate` が Failed to generate multimodal response を返す問題が
-  //   解決できず、llama.rn (llama.cpp バインディング) の initMultimodal 経路へ
-  //   切り替える方針を採用 (docs/PLAN_VLM_llama_rn.md)。
-  //   旧 executorch 経路実装は git history (HEAD~1) で参照可能。
-  const handlePhotoForVision = useCallback(async () => {
-    Alert.alert(
-      '準備中の機能です',
-      '料理写真の認識は llama.rn 経路へ切替中のため、一時的に無効化しています。',
-    )
-  }, [])
+  // 料理写真 → VLM 経路。llama.rn (llama.cpp バインディング) + vlmOrchestrator で
+  // executorch を一時退避させ、llama.rn の completion + initMultimodal で
+  // 料理名を抽出する。設計は docs/PLAN_VLM_llama_rn.md §2/§6 を参照。
+  //   - vlmEnabled が OFF / モデル未 DL のときはアラート誘導
+  //   - 推論中は visionBusy=true、終了時に false。orchestrator が executorch を
+  //     復帰させるため、推論後は数秒間チャット入力が無効化される
+  const handlePhotoForVision = useCallback(
+    async (picker) => {
+      if (visionBusy || ocrBusy) return
+      if (!vlmEnabled) {
+        Alert.alert(
+          '写真認識が無効です',
+          '設定 > LLM モデル > 写真 で「写真認識を有効にする」を ON にしてください。',
+        )
+        return
+      }
+      const vlmModel = getVlmModelById(vlmModelId)
+      const downloaded = await isVlmModelDownloaded(vlmModel).catch(() => false)
+      if (!downloaded) {
+        Alert.alert(
+          'モデル未ダウンロード',
+          `${vlmModel.label} がまだダウンロードされていません。設定 > LLM モデル > 写真 からダウンロードしてください。`,
+        )
+        return
+      }
+
+      let pickedUri = null
+      try {
+        pickedUri = await picker()
+        if (!pickedUri) return
+        setVisionBusy(true)
+        setLocalMessages((prev) => [...prev, makeUserImageMessage(pickedUri)])
+
+        console.log('========== Vision (llama.rn) ==========')
+        console.log('[image]', pickedUri)
+        console.log('[model]', vlmModel.id)
+
+        // 端末カメラの 4032×3024 級は GPU メモリ圧迫するので 1024px 幅へ縮小。
+        // llama.cpp は内部 letterbox するが、巨大画像をそのまま渡すと iOS が落ちる事例あり。
+        const resized = await ImageManipulator.manipulateAsync(
+          pickedUri,
+          [{ resize: { width: 1024 } }],
+          { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG },
+        )
+        const imagePath = resized.uri
+        console.log('[resized]', imagePath)
+
+        const responseText = await runWithLlamaRn(
+          { model: vlmModel, modelContext: modelCtx },
+          async (llama) => {
+            const res = await llama.completion({
+              messages: [
+                { role: 'system', content: VLM_SYSTEM_PROMPT },
+                {
+                  role: 'user',
+                  content: [
+                    { type: 'image_url', image_url: { url: imagePath } },
+                    { type: 'text', text: VLM_USER_QUERY },
+                  ],
+                },
+              ],
+              n_predict: 128,
+              temperature: 0.2,
+            })
+            return (res?.text ?? res?.content ?? '').toString()
+          },
+        )
+
+        const cleaned = responseText.trim()
+        console.log('[vlm response]', cleaned)
+        console.log('======================================')
+
+        setLocalMessages((prev) => [
+          ...prev,
+          makeOcrResultMessage(`【料理写真認識】\n${cleaned || '(空応答)'}`),
+        ])
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+      } catch (e) {
+        console.warn('[vision] failed:', e?.message ?? e)
+        setLocalMessages((prev) => [
+          ...prev,
+          makeOcrResultMessage(`料理写真の認識に失敗: ${e?.message ?? e}`),
+        ])
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {})
+      } finally {
+        setVisionBusy(false)
+      }
+    },
+    [visionBusy, ocrBusy, vlmEnabled, vlmModelId, modelCtx],
+  )
 
   // 撮影/ライブラリ選択の共通 ActionSheet (OCR と VLM どちらの handler でも使う)
   const showPickerSheet = useCallback(
@@ -836,10 +936,10 @@ export default function Chat() {
   )
 
   const onPressAttach = useCallback(() => {
-    if (ocrBusy) return
+    if (ocrBusy || visionBusy) return
     const options = [
       'OCR で読む (ラベル / 体重 / フィットネス)',
-      '料理写真として認識 (準備中)',
+      '料理写真として認識',
       'キャンセル',
     ]
     const cancelButtonIndex = 2
@@ -847,27 +947,30 @@ export default function Chat() {
       { options, cancelButtonIndex, title: '画像の使い方を選ぶ' },
       (selectedIndex) => {
         if (selectedIndex === 0) showPickerSheet(handleImage)
-        else if (selectedIndex === 1) handlePhotoForVision()
+        else if (selectedIndex === 1) showPickerSheet(handlePhotoForVision)
       },
     )
-  }, [showActionSheetWithOptions, showPickerSheet, handleImage, handlePhotoForVision, ocrBusy])
+  }, [showActionSheetWithOptions, showPickerSheet, handleImage, handlePhotoForVision, ocrBusy, visionBusy])
 
   const renderActions = useCallback(
-    () => (
-      <TouchableOpacity
-        style={styles.attachButton}
-        onPress={onPressAttach}
-        disabled={ocrBusy}
-        activeOpacity={0.7}
-      >
-        {ocrBusy ? (
-          <ActivityIndicator size="small" color={colors.lightPurple} />
-        ) : (
-          <FontIcon name="camera" size={22} color={colors.lightPurple} />
-        )}
-      </TouchableOpacity>
-    ),
-    [onPressAttach, ocrBusy],
+    () => {
+      const busy = ocrBusy || visionBusy
+      return (
+        <TouchableOpacity
+          style={styles.attachButton}
+          onPress={onPressAttach}
+          disabled={busy}
+          activeOpacity={0.7}
+        >
+          {busy ? (
+            <ActivityIndicator size="small" color={colors.lightPurple} />
+          ) : (
+            <FontIcon name="camera" size={22} color={colors.lightPurple} />
+          )}
+        </TouchableOpacity>
+      )
+    },
+    [onPressAttach, ocrBusy, visionBusy],
   )
 
   const updateFoodItem = useCallback((messageId, itemId, updates) => {
@@ -1173,7 +1276,10 @@ export default function Chat() {
     )
   }
 
-  if (!llm.isReady) {
+  // VLM 推論中は orchestrator が preventLoad=true で executorch を一時退避するため
+  // llm.isReady が false に落ちる。この間は全画面ロード表示ではなく通常 chat UI を
+  // 維持し、進行状況は📷ボタンの spinner と localMessages で示す。
+  if (!llm.isReady && !visionBusy) {
     const pct = Math.round((llm.downloadProgress ?? 0) * 100)
     const downloading = pct > 0 && pct < 100
     return (

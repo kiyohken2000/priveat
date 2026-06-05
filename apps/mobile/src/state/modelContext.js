@@ -70,6 +70,8 @@ const ModelContext = createContext({
   vlmModelId: DEFAULT_VLM_MODEL_ID,
   setVlmEnabled: () => {},
   setVlmModelId: () => {},
+  preventLlmLoad: false,
+  setPreventLlmLoad: () => {},
 })
 
 // ---- LLM インスタンス用 Context -------------------------------------------
@@ -87,6 +89,9 @@ export const ModelProvider = ({ children }) => {
   // llama.rn 経由の VLM 設定。常駐 LLM ではないので Provider への影響なし。
   const [vlmEnabled, setVlmEnabledState] = useState(false)
   const [vlmModelId, setVlmModelIdState] = useState(DEFAULT_VLM_MODEL_ID)
+  // VLM orchestrator から制御される: true の間は executorch (useLLM) をアンロードして
+  // llama.rn に GPU メモリを譲る。orchestrator が終了時に自動で false に戻す。
+  const [preventLlmLoad, setPreventLlmLoadState] = useState(false)
 
   // AsyncStorage から初期値を読み込み + 前回クラッシュ検出
   useEffect(() => {
@@ -280,6 +285,11 @@ export const ModelProvider = ({ children }) => {
     }
   }, [])
 
+  // VLM orchestrator が呼ぶ。値は永続化しない (アプリ再起動で常に false スタート)。
+  const setPreventLlmLoad = useCallback((b) => {
+    setPreventLlmLoadState(!!b)
+  }, [])
+
   const activeModelId =
     currentRole === 'coach' ? coachModelId
     : currentRole === 'vision' ? visionModelId
@@ -309,6 +319,8 @@ export const ModelProvider = ({ children }) => {
       vlmModelId,
       setVlmEnabled,
       setVlmModelId,
+      preventLlmLoad,
+      setPreventLlmLoad,
     }),
     [
       parserModelId,
@@ -329,6 +341,8 @@ export const ModelProvider = ({ children }) => {
       vlmModelId,
       setVlmEnabled,
       setVlmModelId,
+      preventLlmLoad,
+      setPreventLlmLoad,
     ],
   )
 
@@ -346,8 +360,11 @@ export const ModelProvider = ({ children }) => {
 //   - markLoaded は llm.isReady になったタイミングで Provider 側で自動呼び出し
 //   - llm インスタンスは LLMContext で配るので、購読していない画面は rerender されない
 const LLMProvider = ({ children }) => {
-  const { activeModel, markLoaded } = useContext(ModelContext)
-  const llm = useLLM({ model: activeModel.source })
+  const { activeModel, markLoaded, preventLlmLoad } = useContext(ModelContext)
+  // preventLlmLoad=true の間は useLLM の useEffect が cleanup を走らせて
+  // controllerInstance.delete() で executorch をアンロード。これにより llama.rn
+  // が Metal Working Set を確保できる。false に戻すと自動で再ロードされる。
+  const llm = useLLM({ model: activeModel.source, preventLoad: preventLlmLoad })
 
   useEffect(() => {
     if (llm.isReady) markLoaded()
