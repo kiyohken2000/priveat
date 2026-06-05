@@ -112,6 +112,21 @@ export const MIGRATIONS = [
       ALTER TABLE products   ADD COLUMN image_uri TEXT;
     `,
   },
+  // v3: コーチからのアドバイスをキャッシュ。
+  //   date (YYYY-MM-DD) が PK。snapshot_hash が当日の入力データ＋スタンス＋モデルから
+  //   算出されるハッシュで、これが変わったら再生成促し（UI で stale 表示）。
+  {
+    version: 3,
+    sql: `
+      CREATE TABLE IF NOT EXISTS coach_advice (
+        date TEXT PRIMARY KEY,
+        snapshot_hash TEXT,
+        advice_text TEXT NOT NULL,
+        model_id TEXT,
+        generated_at TEXT NOT NULL
+      );
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version

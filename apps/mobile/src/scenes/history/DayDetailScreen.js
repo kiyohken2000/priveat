@@ -13,6 +13,7 @@ import FontIcon from 'react-native-vector-icons/FontAwesome'
 import { colors, fontSize } from '../../theme'
 import {
   deleteFoodLogItem,
+  getDayMacros,
   getDaySummary,
   getFoodLogByDate,
 } from '../../db/foodLogActions'
@@ -20,6 +21,8 @@ import { getProfile, getLatestWeight } from '../../db/profile'
 import { computeBmr } from '../../utils/bmr'
 import SourceBadge from '../../components/SourceBadge'
 import ImagePreviewModal from '../../components/ImagePreviewModal'
+import AdviceCard from '../../components/AdviceCard'
+import PFCBar from '../../components/PFCBar'
 
 const formatDateLong = (dateStr) => {
   // dateStr: 'YYYY-MM-DD'
@@ -39,6 +42,11 @@ const formatTimeHm = (iso) => {
 
 const round = (n) => (n == null ? null : Math.round(n))
 
+const todayKey = () => {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 export default function DayDetailScreen() {
   const route = useRoute()
   const navigation = useNavigation()
@@ -56,6 +64,7 @@ export default function DayDetailScreen() {
   })
   const [meals, setMeals] = useState([])
   const [bmr, setBmr] = useState(null)
+  const [macros, setMacros] = useState(null)
   const [preview, setPreview] = useState({ visible: false, uri: null, title: '' })
 
   const showPreview = (uri, title) => setPreview({ visible: true, uri, title })
@@ -63,14 +72,16 @@ export default function DayDetailScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [s, m, p, w] = await Promise.all([
+      const [s, m, p, w, mac] = await Promise.all([
         getDaySummary(date),
         getFoodLogByDate(date),
         getProfile(),
         getLatestWeight(),
+        getDayMacros(date),
       ])
       setSummary(s)
       setMeals(m)
+      setMacros(mac)
       setBmr(
         computeBmr({
           weightKg: w?.weight_kg,
@@ -175,6 +186,14 @@ export default function DayDetailScreen() {
               </>
             )}
           </View>
+
+          {/* 栄養バランス */}
+          <View style={styles.card}>
+            <PFCBar macros={macros} />
+          </View>
+
+          {/* AI からのアドバイス */}
+          <AdviceCard date={date} kind={date === todayKey() ? 'today' : 'past'} />
 
           {/* 食事リスト */}
           <View style={styles.card}>

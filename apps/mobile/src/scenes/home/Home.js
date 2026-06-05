@@ -14,9 +14,11 @@ import FontIcon from 'react-native-vector-icons/FontAwesome'
 import ScreenTemplate from '../../components/ScreenTemplate'
 import SourceBadge from '../../components/SourceBadge'
 import ImagePreviewModal from '../../components/ImagePreviewModal'
+import AdviceCard from '../../components/AdviceCard'
+import PFCBar from '../../components/PFCBar'
 import { colors, fontSize } from '../../theme'
 import { getLatestWeight, getProfile } from '../../db/profile'
-import { getTodayEnergy, getTodayIntakeKcal, getTodayMeals } from '../../db/home'
+import { getTodayEnergy, getTodayIntakeKcal, getTodayMacros, getTodayMeals } from '../../db/home'
 import { deleteFoodLogItem } from '../../db/foodLogActions'
 import { computeBmr } from '../../utils/bmr'
 
@@ -44,6 +46,11 @@ const formatDateShort = (iso) => {
   }
 }
 
+const todayKey = () => {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 const round = (n) => (n == null ? null : Math.round(n))
 
 export default function Home() {
@@ -56,6 +63,7 @@ export default function Home() {
   const [profileTarget, setProfileTarget] = useState(null)
   const [latestWeight, setLatestWeight] = useState(null)
   const [meals, setMeals] = useState([])
+  const [macros, setMacros] = useState(null)
   const [preview, setPreview] = useState({ visible: false, uri: null, title: '' })
 
   const showPreview = (uri, title) => setPreview({ visible: true, uri, title })
@@ -63,16 +71,18 @@ export default function Home() {
 
   const load = useCallback(async () => {
     try {
-      const [p, w, intakeKcal, energyRow, mealRows] = await Promise.all([
+      const [p, w, intakeKcal, energyRow, mealRows, macroRow] = await Promise.all([
         getProfile(),
         getLatestWeight(),
         getTodayIntakeKcal(),
         getTodayEnergy(),
         getTodayMeals(),
+        getTodayMacros(),
       ])
       setIntake(intakeKcal)
       setEnergy(energyRow)
       setMeals(mealRows)
+      setMacros(macroRow)
       // BMR 計算には profile + 最新体重が必要
       const computed = computeBmr({
         weightKg: w?.weight_kg,
@@ -209,6 +219,14 @@ export default function Home() {
                 </Text>
               </View>
             )}
+
+            {/* 栄養バランス (PFC) */}
+            <View style={styles.card}>
+              <PFCBar macros={macros} />
+            </View>
+
+            {/* AI からのアドバイス */}
+            <AdviceCard date={todayKey()} kind="today" />
 
             {/* 最新体重 */}
             <View style={styles.card}>

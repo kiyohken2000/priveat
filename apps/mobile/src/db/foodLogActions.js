@@ -62,6 +62,34 @@ export const getDaySummary = async (date) => {
   }
 }
 
+// 指定日の PFC を算出（home.js の getTodayMacros の date 指定版）。
+export const getDayMacros = async (date) => {
+  const db = getDb()
+  const row = await db.getFirstAsync(
+    `SELECT
+       COALESCE(SUM(fl.kcal), 0) AS totalKcal,
+       COALESCE(SUM(CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
+                         THEN fl.kcal * f.protein_per_100g / f.kcal_per_100g END), 0) AS protein,
+       COALESCE(SUM(CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
+                         THEN fl.kcal * f.fat_per_100g     / f.kcal_per_100g END), 0) AS fat,
+       COALESCE(SUM(CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
+                         THEN fl.kcal * f.carb_per_100g    / f.kcal_per_100g END), 0) AS carb,
+       COALESCE(SUM(CASE WHEN f.kcal_per_100g > 0 AND fl.kcal IS NOT NULL
+                         THEN fl.kcal END), 0) AS matchedKcal
+       FROM food_log fl
+       LEFT JOIN foods f ON fl.ref_food_id = f.id AND fl.ref_kind = 'food'
+      WHERE date(fl.eaten_at, 'localtime') = ?`,
+    [date],
+  )
+  return {
+    totalKcal: row?.totalKcal ?? 0,
+    matchedKcal: row?.matchedKcal ?? 0,
+    protein: row?.protein ?? 0,
+    fat: row?.fat ?? 0,
+    carb: row?.carb ?? 0,
+  }
+}
+
 // 1件取得（編集画面用）。
 export const getFoodLogItem = async (id) => {
   const db = getDb()

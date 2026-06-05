@@ -129,24 +129,26 @@
 
 ## フェーズ7: ホーム／履歴画面
 
-- [ ] ホーム: 今日のサマリー（摂取/消費/収支・残り・進捗バー・最新体重）
-- [ ] 履歴: 日別リスト
-- [ ] 履歴: 週別グラフ（カロリー収支・体重推移）
-- [ ] 栄養バランス表示
-- [ ] 過去日の編集・削除
+- [x] ホーム: 今日のサマリー（摂取/消費/収支・残り・進捗バー・最新体重・今日の食事リスト）
+- [x] 履歴: 日別リスト（30日、`History.js`）+ 月別カレンダー（`CalendarScreen.js`）
+- [x] 履歴: 週別グラフ（カロリー収支7日 + 体重推移30日、`react-native-gifted-charts`）
+- [x] 栄養バランス表示（Home / DayDetail に PFCBar、`food_log` × `foods` の JOIN で kcal 比から逆算）
+- [x] 過去日の編集・削除（`EditFoodScreen` + DayDetail の削除ボタン）
 
-**DoD**: 別画面で日別・週別の記録を振り返れる（ChatGPTにない履歴機能の実現）。
+**DoD**: 別画面で日別・週別の記録を振り返れる（ChatGPTにない履歴機能の実現）。✅
 
 ---
 
 ## フェーズ8: コーチング（履歴Q&A・アドバイス）
 
-- [ ] 履歴データをLLMに渡すコンテキスト整形
-- [ ] 「先週より炭水化物多い？」等の履歴質問応答
-- [ ] 日次/週次のアドバイス生成
-- [ ] 過度に否定的にならない・健康的な方向に導くトーン調整
+- [x] 履歴データをLLMに渡すコンテキスト整形（`coaching/context.js` + `advice.js` の date 指定版）
+- [x] 「先週より炭水化物多い？」等の履歴質問応答（Chat の coach モード + COACH_SUGGESTIONS）
+- [x] 日次のアドバイス生成（Home/DayDetail に `AdviceCard`、ワンショット `llm.generate`、`coach_advice` テーブルでキャッシュ）
+- [ ] 週次サマリーのアドバイス（後段、必要に応じて）
+- [x] スタンス自由文入力（設定 > コーチへの指示 = `StanceScreen` → AsyncStorage）
+- [x] 過度に否定的にならない・健康的な方向に導くトーン調整（`COACH_RULES`、アドバイス用は `COACH_ADVICE_SYSTEM_PROMPT` で文字数も指定）
 
-**DoD**: 履歴をもとにLLMが質問に答え、アドバイスを返す。
+**DoD**: 履歴をもとにLLMが質問に答え、アドバイスを返す。✅
 
 ---
 
@@ -199,14 +201,9 @@
 
 ### 将来やりたい機能（後回し）
 
-- **今日のサマリーや履歴の日詳細に「AI からのアドバイス」を表示したい**
-  - 設定 → コーチへの指示 (StanceScreen) で入力したスタンスを踏まえて、ホーム画面の今日サマリー / 履歴の DayDetail にコーチ応答を埋め込み表示する。
-  - 設計検討事項:
-    - 生成タイミング（画面を開いた時に都度生成 / バックグラウンドで先回り生成 / 手動更新ボタン）
-    - キャッシュ戦略（同じ日のアドバイスを再生成し続けるのを避ける）
-    - parser モデルがロード中（記録用がアクティブ）の時に coach モデルへの swap をどう扱うか
-    - 応答は EnrichedMarkdownText で描画（チャット側と統一）
-  - 関連: `apps/mobile/src/coaching/context.js` の buildCoachingContext と `prompts.js` の buildCoachSystemPrompt を流用。Day 単位用のコンテキストビルダーを別途用意する手もあり。
+- **週次サマリーへの AI アドバイス**
+  - 現在は日次アドバイスのみ (`AdviceCard` + `coach_advice` テーブル)。週次サマリー画面または履歴のカレンダー上から「今週どうだった？」を 1 タップで呼べる導線が欲しい。
+  - 関連: `coaching/advice.js` に `buildAdviceContextForWeek(weekStart)` を追加、キャッシュは週単位 (`weekly_advice` テーブル別建て or 同じ coach_advice に week- プレフィックス) を検討。
 
 ### 既知の不具合（後回しでよい）
 
