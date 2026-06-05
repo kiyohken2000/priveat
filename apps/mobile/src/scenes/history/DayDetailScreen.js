@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
+import { EnrichedMarkdownText } from 'react-native-enriched-markdown'
 import { colors, fontSize } from '../../theme'
 import {
   deleteFoodLogItem,
@@ -18,6 +19,7 @@ import {
   getFoodLogByDate,
 } from '../../db/foodLogActions'
 import { getProfile, getLatestWeight } from '../../db/profile'
+import { getCoachChatByDate } from '../../db/chatMessages'
 import { computeBmr } from '../../utils/bmr'
 import SourceBadge from '../../components/SourceBadge'
 import ImagePreviewModal from '../../components/ImagePreviewModal'
@@ -47,6 +49,18 @@ const todayKey = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+// AdviceCard と同じ Markdown スタイル (assistant 発言の描画用)。
+const CHAT_MARKDOWN_STYLE = {
+  paragraph: { color: colors.black, fontSize: fontSize.middle, marginTop: 0, marginBottom: 4 },
+  h1: { color: colors.darkPurple, fontSize: 18, fontWeight: '700', marginTop: 2, marginBottom: 4 },
+  h2: { color: colors.darkPurple, fontSize: 17, fontWeight: '700', marginTop: 2, marginBottom: 4 },
+  h3: { color: colors.darkPurple, fontSize: 16, fontWeight: '700', marginTop: 2, marginBottom: 4 },
+  list: { color: colors.black, fontSize: fontSize.middle, marginBottom: 4, bulletColor: colors.lightPurple },
+  strong: { color: colors.darkPurple },
+  blockquote: { color: colors.darkPurple, borderColor: colors.lightPurple, borderWidth: 3, backgroundColor: 'transparent' },
+  code: { color: colors.darkPurple, backgroundColor: '#efedf7', fontFamily: 'Courier' },
+}
+
 export default function DayDetailScreen() {
   const route = useRoute()
   const navigation = useNavigation()
@@ -65,6 +79,7 @@ export default function DayDetailScreen() {
   const [meals, setMeals] = useState([])
   const [bmr, setBmr] = useState(null)
   const [macros, setMacros] = useState(null)
+  const [coachChat, setCoachChat] = useState([])
   const [preview, setPreview] = useState({ visible: false, uri: null, title: '' })
 
   const showPreview = (uri, title) => setPreview({ visible: true, uri, title })
@@ -72,16 +87,18 @@ export default function DayDetailScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [s, m, p, w, mac] = await Promise.all([
+      const [s, m, p, w, mac, chat] = await Promise.all([
         getDaySummary(date),
         getFoodLogByDate(date),
         getProfile(),
         getLatestWeight(),
         getDayMacros(date),
+        getCoachChatByDate(date),
       ])
       setSummary(s)
       setMeals(m)
       setMacros(mac)
+      setCoachChat(chat)
       setBmr(
         computeBmr({
           weightKg: w?.weight_kg,
@@ -194,6 +211,40 @@ export default function DayDetailScreen() {
 
           {/* AI からのアドバイス */}
           <AdviceCard date={date} kind={date === todayKey() ? 'today' : 'past'} />
+
+          {/* この日のコーチ対話 */}
+          {coachChat.length > 0 && (
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>この日のコーチ対話 ({coachChat.length / 2}件)</Text>
+              {coachChat.map((msg) => (
+                <View
+                  key={msg.id}
+                  style={[
+                    styles.chatBubble,
+                    msg.role === 'user' ? styles.chatBubbleUser : styles.chatBubbleAssistant,
+                  ]}
+                >
+                  {msg.role === 'user' ? (
+                    <Text style={styles.chatUserText}>{msg.text}</Text>
+                  ) : (
+                    <>
+                      <EnrichedMarkdownText
+                        markdown={msg.text}
+                        markdownStyle={CHAT_MARKDOWN_STYLE}
+                        flavor="github"
+                        allowTrailingMargin={false}
+                        selectable
+                      />
+                      <Text style={styles.chatMeta}>
+                        {formatTimeHm(msg.created_at)}
+                        {msg.modelId ? ` · ${msg.modelId}` : ''}
+                      </Text>
+                    </>
+                  )}
+                </View>
+              ))}
+            </View>
+          )}
 
           {/* 食事リスト */}
           <View style={styles.card}>
@@ -340,4 +391,31 @@ const styles = StyleSheet.create({
   mealKcal: { fontSize: fontSize.middle, color: colors.darkPurple, fontWeight: '600' },
   deleteBtn: { padding: 10, marginLeft: 4 },
   btnPressed: { opacity: 0.6 },
+  chatBubble: {
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 8,
+    maxWidth: '88%',
+  },
+  chatBubbleUser: {
+    backgroundColor: colors.lightPurple,
+    alignSelf: 'flex-end',
+  },
+  chatBubbleAssistant: {
+    backgroundColor: '#fafafe',
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: '#f0eef7',
+  },
+  chatMeta: {
+    fontSize: 10,
+    color: colors.gray,
+    marginTop: 6,
+    textAlign: 'right',
+  },
+  chatUserText: {
+    color: colors.white,
+    fontSize: fontSize.middle,
+  },
 })

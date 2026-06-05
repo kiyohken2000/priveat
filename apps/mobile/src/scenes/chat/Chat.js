@@ -24,6 +24,7 @@ import FoodCard from './FoodCard'
 import { getFoodSchemaPrompt, normalizePortion, parseFoodOutput } from './schema'
 import { computeKcalFromMatch, findBestFood } from '../../db/search'
 import { countFoodLog, insertFoodLogItems } from '../../db/foodLog'
+import { insertCoachExchange } from '../../db/chatMessages'
 import { captureFromCamera, pickFromLibrary, runOcr } from './imageOcr'
 import { detectAndParse } from './ocrParsers'
 import { insertEnergyFromFitness, insertProductFromLabel, insertWeightFromOcr } from '../../db/ocrLogs'
@@ -317,12 +318,18 @@ export default function Chat() {
           chatConfig: { systemPrompt, initialMessageHistory: restoreHist },
           generationConfig: { temperature },
         })
-        // インデックスが復元履歴に合わせて変わるので、processed セットも合わせる。
+        // インデックスが復元履歴に合わせて変わるので、processed/persisted セットも合わせる。
+        // 復元される assistant 行は既に処理 (log なら parse、coach なら DB 保存) 済み扱い。
         const newProcessed = new Set()
+        const newPersisted = new Set()
         restoreHist.forEach((m, i) => {
-          if (m.role === 'assistant') newProcessed.add(i)
+          if (m.role === 'assistant') {
+            newProcessed.add(i)
+            newPersisted.add(i)
+          }
         })
         processedRef.current = newProcessed
+        persistedCoachRef.current = newPersisted
       } catch (e) {
         console.warn('[chat] configure failed:', e)
       } finally {
@@ -338,6 +345,9 @@ export default function Chat() {
   // Parse any complete assistant messages that haven't been parsed yet
   // (uses processedRef to guard against re-processing in the async window)
   const processedRef = useRef(new Set())
+  // coach モードで「DB 保存済み」の assistant 行 index を追跡。
+  // 二重保存を防ぐ。configure useEffect で復元時にもリセットされる。
+  const persistedCoachRef = useRef(new Set())
   useEffect(() => {
     if (llm.isGenerating) return
     // コーチモードでは現在の履歴はすべてコーチ応答（プレーンテキスト表示のみ）。
@@ -378,6 +388,29 @@ export default function Chat() {
       })()
     })
   }, [llm.messageHistory, llm.isGenerating, mode])
+
+  // coach モードの Q&A を chat_messages テーブルに永続化。
+  //   - 記録モードの会話は food_log が成果物として残るので保存しない。
+  //   - DayDetail の「この日のコーチ対話」セクションで日付別に取り出して表示する。
+  useEffect(() => {
+    if (llm.isGenerating) return
+    if (mode !== 'coach') return
+    const base = llm.messageHistory.filter((m) => m.role !== 'system')
+    base.forEach((m, idx) => {
+      if (m.role !== 'assistant') return
+      if (persistedCoachRef.current.has(idx)) return
+      const userMsg = base[idx - 1]
+      if (userMsg?.role !== 'user') return
+      const cleanedAssistant = stripThink(m.content)
+      if (!cleanedAssistant) return // <think> しか出てこなかった等は保存しない
+      persistedCoachRef.current.add(idx)
+      insertCoachExchange({
+        userText: userMsg.content,
+        assistantText: cleanedAssistant,
+        modelId: activeModel.id,
+      }).catch((e) => console.warn('[chat] coach persist failed:', e?.message ?? e))
+    })
+  }, [llm.messageHistory, llm.isGenerating, mode, activeModel.id])
 
   const messages = useMemo(() => {
     const items = []
