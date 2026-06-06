@@ -17,6 +17,7 @@ import { colors, fontSize } from '../../theme'
 import { getFoodLogItem, updateFoodLogItem } from '../../db/foodLogActions'
 import { computeKcalFromMatch, findBestFood } from '../../db/search'
 import { portionFactor } from '../../db/foodLog'
+import FoodNameInput from '../../components/FoodNameInput'
 
 const toNum = (v) => {
   if (v == null) return null
@@ -153,9 +154,14 @@ export default function EditFoodScreen() {
     >
       <ScrollView contentContainerStyle={styles.root} keyboardShouldPersistTaps="handled">
         <Field label="食品名">
-          <TextInput
+          <FoodNameInput
             value={name}
             onChangeText={setName}
+            onCommit={(picked, _food, suggestedUnit) => {
+              setName(picked)
+              // 既定単位が引けたら一緒に上書き (タップ時のみ)。手で打った単位は尊重する。
+              if (suggestedUnit) setUnit(suggestedUnit)
+            }}
             placeholder="例: ごはん"
             placeholderTextColor={colors.gray}
             style={styles.input}

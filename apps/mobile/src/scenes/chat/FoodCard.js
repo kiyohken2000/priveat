@@ -2,12 +2,12 @@ import React, { useState } from 'react'
 import {
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native'
 import { colors, fontSize } from '../../theme'
+import FoodNameInput from '../../components/FoodNameInput'
 
 const PORTIONS = [
   { value: 'small', label: '少なめ', factor: 0.7 },
@@ -54,10 +54,17 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
     <View style={styles.row}>
       <View style={styles.rowMain}>
         {editing ? (
-          <TextInput
+          <FoodNameInput
             style={styles.nameInput}
             value={draft}
             onChangeText={setDraft}
+            onCommit={(picked) => {
+              setDraft(picked)
+              setEditing(false)
+              if (picked && picked !== item.name) {
+                onUpdateItem?.(messageId, item.id, { name: picked })
+              }
+            }}
             onBlur={commitEdit}
             onSubmitEditing={commitEdit}
             autoFocus

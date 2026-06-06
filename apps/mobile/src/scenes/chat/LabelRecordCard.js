@@ -10,6 +10,7 @@ import {
 } from 'react-native'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
 import { colors, fontSize } from '../../theme'
+import FoodNameInput from '../../components/FoodNameInput'
 
 // 栄養ラベル OCR 経由の食事記録カード。
 //
@@ -97,9 +98,10 @@ export default function LabelRecordCard({ message, onSave }) {
       ) : (
         <>
           <Text style={styles.label}>食品名</Text>
-          <TextInput
+          <FoodNameInput
             value={name}
             onChangeText={setName}
+            onCommit={(picked) => setName(picked)}
             placeholder="例: プレーンヨーグルト 200g"
             placeholderTextColor={colors.gray}
             style={styles.input}

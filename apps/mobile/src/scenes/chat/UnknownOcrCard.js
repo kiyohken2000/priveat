@@ -10,6 +10,7 @@ import {
 } from 'react-native'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
 import { colors, fontSize } from '../../theme'
+import FoodNameInput from '../../components/FoodNameInput'
 
 // OCR の振り分けに失敗した (kind='unknown') ときの手入力カード。
 //
@@ -112,9 +113,10 @@ export default function UnknownOcrCard({ message, onSave }) {
       ) : (
         <>
           <Text style={styles.label}>食品名</Text>
-          <TextInput
+          <FoodNameInput
             value={name}
             onChangeText={setName}
+            onCommit={(picked) => setName(picked)}
             placeholder="例: ハンバーガー"
             placeholderTextColor={colors.gray}
             style={styles.input}

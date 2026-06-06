@@ -87,3 +87,16 @@ export const lookupPortion = (name, unit) => {
   if (map[canon] != null) return map[canon]
   return null
 }
+
+// 食品名から既定単位を推定する。
+//   - PORTION_WEIGHTS に登録があれば最初のキー (= 最も自然な単位) を返す
+//     ※ JS オブジェクトの挿入順序が「自然な単位」になるよう PORTION_WEIGHTS を並べておく
+//   - 無ければ null
+// kcal 計算ではなく「入力欄の単位サジェスト」用なので、ヒットしないことも許容する。
+export const defaultUnitForName = (name) => {
+  if (!name) return null
+  const map = PORTION_WEIGHTS[String(name).trim()]
+  if (!map) return null
+  const keys = Object.keys(map)
+  return keys.length > 0 ? keys[0] : null
+}
