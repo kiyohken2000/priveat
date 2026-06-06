@@ -62,6 +62,10 @@ export const parseLabelText = (text) => {
 export const parseFitnessText = (text) => {
   if (!text) return null
 
+  // レシート / 注文履歴系 (マック公式アプリ、ウーバーイーツ、コンビニ等) を弾く。
+  // 「¥1,080」を 1,080 歩と誤検出するのを防ぐ。
+  if (/[¥￥]|合計|小計|注文|ご注文|レシート|お会計/.test(text)) return null
+
   // 大文字 KCAL は Apple Fitness など運動アプリ系の表記
   const kcalMatch = text.match(/(\d+)(?:\s*\/\s*\d+)?\s*KCAL\b/)
   const activeKcal = kcalMatch ? parseInt(kcalMatch[1], 10) : null
