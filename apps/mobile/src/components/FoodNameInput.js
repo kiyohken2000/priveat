@@ -147,11 +147,6 @@ export default function FoodNameInput({
               <Text style={styles.suggestName} numberOfLines={1}>
                 {food.name}
               </Text>
-              {food.source ? (
-                <Text style={styles.suggestSource}>
-                  {food.source === 'mext' ? '八訂' : 'Slism'}
-                </Text>
-              ) : null}
             </TouchableOpacity>
           ))}
         </View>
@@ -184,10 +179,5 @@ const styles = StyleSheet.create({
     fontSize: fontSize.small,
     color: colors.black,
     flex: 1,
-  },
-  suggestSource: {
-    fontSize: fontSize.tiny ?? 10,
-    color: colors.gray,
-    fontWeight: '600',
   },
 })
