@@ -1,5 +1,12 @@
-import React from 'react'
-import { StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native'
+import React, { useState } from 'react'
+import {
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
+} from 'react-native'
 import { colors, fontSize } from '../../theme'
 
 const PORTIONS = [
@@ -21,7 +28,88 @@ export const computeKcal = (item) => {
   return Math.round(item.baseKcal * portionMeta(item.portion).factor)
 }
 
-export default function FoodCard({ message, onUpdateItem, title }) {
+function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
+  const meta = portionMeta(item.portion)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(item.name ?? '')
+
+  const startEdit = () => {
+    setDraft(item.name ?? '')
+    setEditing(true)
+  }
+  const commitEdit = () => {
+    // onSubmitEditing → blurOnSubmit が onBlur を続けて発火させるので二重起動を防ぐ。
+    if (!editing) return
+    setEditing(false)
+    const next = draft.trim()
+    if (!next || next === item.name) return
+    onUpdateItem?.(messageId, item.id, { name: next })
+  }
+  const cancelEdit = () => {
+    setDraft(item.name ?? '')
+    setEditing(false)
+  }
+
+  return (
+    <View style={styles.row}>
+      <View style={styles.rowMain}>
+        {editing ? (
+          <TextInput
+            style={styles.nameInput}
+            value={draft}
+            onChangeText={setDraft}
+            onBlur={commitEdit}
+            onSubmitEditing={commitEdit}
+            autoFocus
+            returnKeyType="done"
+            blurOnSubmit
+            placeholder="料理名"
+            placeholderTextColor={colors.grayFifth}
+          />
+        ) : (
+          <TouchableOpacity onPress={startEdit} activeOpacity={0.6}>
+            <Text style={styles.name}>{item.name}</Text>
+          </TouchableOpacity>
+        )}
+        <Text style={styles.detail}>
+          {item.quantity}
+          {item.unit} · {kcal == null ? '— kcal' : `${kcal} kcal`}
+        </Text>
+        {item.matchedName ? (
+          <Text style={styles.matched} numberOfLines={1}>
+            ※ {item.matchedName}
+          </Text>
+        ) : null}
+      </View>
+      <TouchableOpacity
+        style={styles.portionPill}
+        onPress={() =>
+          onUpdateItem?.(messageId, item.id, { portion: cycleNextPortion(item.portion) })
+        }
+        activeOpacity={0.7}
+        disabled={editing}
+      >
+        <Text style={styles.portionText}>{meta.label}</Text>
+      </TouchableOpacity>
+      {editing ? (
+        <TouchableOpacity onPress={cancelEdit} style={styles.iconBtn} activeOpacity={0.6}>
+          <Text style={styles.cancelText}>×</Text>
+        </TouchableOpacity>
+      ) : (
+        <TouchableOpacity
+          onPress={() => onDeleteItem?.(messageId, item.id)}
+          style={styles.iconBtn}
+          activeOpacity={0.6}
+          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+        >
+          <Text style={styles.deleteText}>×</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  )
+}
+
+export default function FoodCard({ message, onUpdateItem, onDeleteItem, title }) {
   const items = message.foodItems ?? []
   const kcals = items.map(computeKcal)
   const hasUnknownKcal = kcals.some((k) => k == null)
@@ -34,36 +122,28 @@ export default function FoodCard({ message, onUpdateItem, title }) {
   // Message container は maxWidth: 90%。それを超えないよう少し小さめで固定。
   const cardWidth = Math.floor(screenWidth * 0.85)
 
+  if (items.length === 0) {
+    return (
+      <View style={[styles.card, { width: cardWidth }]}>
+        {title ? <Text style={styles.title}>{title}</Text> : null}
+        <Text style={styles.emptyHint}>すべての行を削除しました</Text>
+      </View>
+    )
+  }
+
   return (
     <View style={[styles.card, { width: cardWidth }]}>
       {title ? <Text style={styles.title}>{title}</Text> : null}
-      {items.map((item, i) => {
-        const meta = portionMeta(item.portion)
-        const kcal = kcals[i]
-        return (
-          <View key={item.id ?? `${item.name}-${i}`} style={styles.row}>
-            <View style={styles.rowMain}>
-              <Text style={styles.name}>{item.name}</Text>
-              <Text style={styles.detail}>
-                {item.quantity}
-                {item.unit} · {kcal == null ? '— kcal' : `${kcal} kcal`}
-              </Text>
-              {item.matchedName ? (
-                <Text style={styles.matched} numberOfLines={1}>
-                  ※ {item.matchedName}
-                </Text>
-              ) : null}
-            </View>
-            <TouchableOpacity
-              style={styles.portionPill}
-              onPress={() => onUpdateItem?.(message._id, item.id, { portion: cycleNextPortion(item.portion) })}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.portionText}>{meta.label}</Text>
-            </TouchableOpacity>
-          </View>
-        )
-      })}
+      {items.map((item, i) => (
+        <FoodRow
+          key={item.id ?? `${item.name}-${i}`}
+          item={item}
+          kcal={kcals[i]}
+          messageId={message._id}
+          onUpdateItem={onUpdateItem}
+          onDeleteItem={onDeleteItem}
+        />
+      ))}
       <View style={styles.total}>
         <Text style={styles.totalLabel}>合計</Text>
         <Text style={styles.totalValue}>
@@ -71,7 +151,7 @@ export default function FoodCard({ message, onUpdateItem, title }) {
           {dailyTarget ? ` / ${dailyTarget} kcal` : ''}
         </Text>
       </View>
-      <Text style={styles.hint}>ピルをタップで分量を変更</Text>
+      <Text style={styles.hint}>料理名タップで編集 / ピルで分量 / × で削除</Text>
     </View>
   )
 }
@@ -107,6 +187,15 @@ const styles = StyleSheet.create({
     color: colors.black,
     fontWeight: '600',
   },
+  nameInput: {
+    fontSize: fontSize.middle,
+    color: colors.black,
+    fontWeight: '600',
+    borderBottomWidth: 1,
+    borderBottomColor: colors.darkPurple,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+  },
   detail: {
     fontSize: fontSize.small,
     color: colors.gray,
@@ -127,6 +216,24 @@ const styles = StyleSheet.create({
   portionText: {
     fontSize: fontSize.small,
     color: colors.white,
+    fontWeight: '600',
+  },
+  iconBtn: {
+    marginLeft: 6,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteText: {
+    fontSize: fontSize.middle,
+    color: colors.gray,
+    fontWeight: '600',
+  },
+  cancelText: {
+    fontSize: fontSize.middle,
+    color: colors.darkPurple,
     fontWeight: '600',
   },
   total: {
@@ -153,5 +260,11 @@ const styles = StyleSheet.create({
     color: colors.gray,
     marginTop: 8,
     textAlign: 'right',
+  },
+  emptyHint: {
+    fontSize: fontSize.small,
+    color: colors.gray,
+    paddingVertical: 8,
+    textAlign: 'center',
   },
 })

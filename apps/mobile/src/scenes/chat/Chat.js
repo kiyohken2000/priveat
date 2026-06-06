@@ -26,7 +26,13 @@ import ActivityCard from './ActivityCard'
 import UnknownOcrCard from './UnknownOcrCard'
 import { getRecordSchemaPrompt, normalizePortion, parseRecordOutput } from './schema'
 import { computeKcalFromMatch, findBestFood } from '../../db/search'
-import { countFoodLog, insertFoodLogFromLabel, insertFoodLogItems } from '../../db/foodLog'
+import {
+  countFoodLog,
+  deleteFoodLogItem,
+  insertFoodLogFromLabel,
+  insertFoodLogItems,
+  updateFoodLogItem,
+} from '../../db/foodLog'
 import { insertCoachExchange } from '../../db/chatMessages'
 import * as ImageManipulator from 'expo-image-manipulator'
 import { captureFromCamera, pickFromLibrary, runOcr } from './imageOcr'
@@ -459,6 +465,16 @@ export default function Chat() {
   }, [fellBack, dismissFellBack])
   const [localMessages, setLocalMessages] = useState([])
   const [llmCards, setLlmCards] = useState({}) // { historyIndex: { foodItems? | error? } }
+  // updateFoodItem / deleteFoodItem は非同期で findBestFood や DB UPDATE を挟むため、
+  // 最新 state を closure 越しに見られるよう ref ミラーを用意する。
+  const localMessagesRef = useRef(localMessages)
+  const llmCardsRef = useRef(llmCards)
+  useEffect(() => {
+    localMessagesRef.current = localMessages
+  }, [localMessages])
+  useEffect(() => {
+    llmCardsRef.current = llmCards
+  }, [llmCards])
   const [ocrBusy, setOcrBusy] = useState(false)
   const [visionBusy, setVisionBusy] = useState(false)
   // VLM 完了直後、executorch (parser) が再ロード完了するまでの「すき間」用フラグ。
@@ -573,6 +589,12 @@ export default function Chat() {
           console.log('[parsed+enriched]', JSON.stringify(result.foodItems, null, 2))
           try {
             const insertedIds = await insertFoodLogItems(result.foodItems)
+            // 編集 / 削除 UI から DB 行を引けるよう、INSERT 後の id を foodItems に焼き込む。
+            // insertFoodLogItems は items と同じ順序で id を返す前提。
+            result.foodItems = result.foodItems.map((it, j) => ({
+              ...it,
+              foodLogId: insertedIds[j] ?? null,
+            }))
             const total = await countFoodLog()
             console.log(`[food_log] inserted ${insertedIds.length} rows (total ${total})`, insertedIds)
           } catch (e) {
@@ -969,14 +991,20 @@ export default function Chat() {
         console.log('[vlm enriched]', JSON.stringify(enriched, null, 2))
 
         // テキスト経路と同じく即時 INSERT。source='vision' で OCR/テキストと区別。
+        let insertedIds = []
         try {
-          const ids = await insertFoodLogItems(enriched, { source: 'vision' })
+          insertedIds = await insertFoodLogItems(enriched, { source: 'vision' })
           const total = await countFoodLog()
-          console.log(`[food_log] vlm inserted ${ids.length} rows (total ${total})`, ids)
+          console.log(`[food_log] vlm inserted ${insertedIds.length} rows (total ${total})`, insertedIds)
         } catch (e) {
           console.warn('[food_log] vlm insert failed:', e?.message ?? e)
         }
         console.log('======================================')
+
+        const enrichedWithIds = enriched.map((it, j) => ({
+          ...it,
+          foodLogId: insertedIds[j] ?? null,
+        }))
 
         setLocalMessages((prev) => [
           ...prev,
@@ -985,7 +1013,7 @@ export default function Chat() {
             text: '',
             createdAt: new Date(stamp + 1),
             user: ASSISTANT,
-            foodItems: enriched,
+            foodItems: enrichedWithIds,
           },
         ])
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
@@ -1062,15 +1090,28 @@ export default function Chat() {
     [onPressAttach, ocrBusy, visionBusy],
   )
 
-  const updateFoodItem = useCallback((messageId, itemId, updates) => {
-    // localMessages 由来の food カード (ダミー / VLM 経路) は localMessages の中身を直接書き換える。
+  // ref ミラーから (messageId, itemId) で foodItem を引く。
+  const findFoodItemSnapshot = useCallback((messageId, itemId) => {
+    if (messageId.startsWith('local-card-') || messageId.startsWith('local-vlm-')) {
+      const m = localMessagesRef.current.find((x) => x._id === messageId)
+      return m?.foodItems?.find((it) => it.id === itemId) ?? null
+    }
+    if (messageId.startsWith('h-')) {
+      const idx = Number(messageId.slice(2))
+      return llmCardsRef.current[idx]?.foodItems?.find((it) => it.id === itemId) ?? null
+    }
+    return null
+  }, [])
+
+  // foodItem を patch でマージしてローカル state に反映。
+  const applyFoodItemPatch = useCallback((messageId, itemId, patch) => {
     if (messageId.startsWith('local-card-') || messageId.startsWith('local-vlm-')) {
       setLocalMessages((prev) =>
         prev.map((m) =>
           m._id === messageId && m.foodItems
             ? {
                 ...m,
-                foodItems: m.foodItems.map((it) => (it.id === itemId ? { ...it, ...updates } : it)),
+                foodItems: m.foodItems.map((it) => (it.id === itemId ? { ...it, ...patch } : it)),
               }
             : m,
         ),
@@ -1086,12 +1127,115 @@ export default function Chat() {
           ...prev,
           [idx]: {
             ...entry,
-            foodItems: entry.foodItems.map((it) => (it.id === itemId ? { ...it, ...updates } : it)),
+            foodItems: entry.foodItems.map((it) => (it.id === itemId ? { ...it, ...patch } : it)),
           },
         }
       })
     }
   }, [])
+
+  const removeFoodItemRow = useCallback((messageId, itemId) => {
+    if (messageId.startsWith('local-card-') || messageId.startsWith('local-vlm-')) {
+      setLocalMessages((prev) =>
+        prev.map((m) =>
+          m._id === messageId && m.foodItems
+            ? { ...m, foodItems: m.foodItems.filter((it) => it.id !== itemId) }
+            : m,
+        ),
+      )
+      return
+    }
+    if (messageId.startsWith('h-')) {
+      const idx = Number(messageId.slice(2))
+      setLlmCards((prev) => {
+        const entry = prev[idx]
+        if (!entry?.foodItems) return prev
+        return {
+          ...prev,
+          [idx]: { ...entry, foodItems: entry.foodItems.filter((it) => it.id !== itemId) },
+        }
+      })
+    }
+  }, [])
+
+  // FoodCard 上の編集 (portion ピル / 料理名インライン編集) の集約ハンドラ。
+  //   - name 変更時は findBestFood で再マッチして baseKcal / matched* を更新する。
+  //   - foodLogId が振られていれば food_log を UPDATE する (現状は portion 変更も DB に反映される)。
+  const updateFoodItem = useCallback(
+    async (messageId, itemId, updates) => {
+      const before = findFoodItemSnapshot(messageId, itemId)
+      if (!before) return
+
+      const patch = {}
+      let nextName = before.name
+      let nextBaseKcal = before.baseKcal
+      let nextMatchedId = before.matchedFoodId ?? null
+      let nextMatchedName = before.matchedName ?? null
+      let nextMatchedCode = before.matchedFoodCode ?? null
+      let nextPortion = before.portion ?? 'normal'
+
+      if ('name' in updates) {
+        const trimmed = (updates.name ?? '').trim()
+        if (!trimmed || trimmed === before.name) {
+          // 空 or 変更なしなら name の更新はスキップ。portion の更新は続行する。
+        } else {
+          const matched = await findBestFood(trimmed).catch((e) => {
+            console.warn('[db] foodcard edit search failed:', e?.message ?? e)
+            return null
+          })
+          nextName = trimmed
+          nextBaseKcal = computeKcalFromMatch(matched, before.quantity, before.unit, trimmed)
+          nextMatchedId = matched?.id ?? null
+          nextMatchedName = matched?.name ?? null
+          nextMatchedCode = matched?.food_code ?? null
+          patch.name = nextName
+          patch.baseKcal = nextBaseKcal
+          patch.matchedFoodId = nextMatchedId
+          patch.matchedName = nextMatchedName
+          patch.matchedFoodCode = nextMatchedCode
+        }
+      }
+      if ('portion' in updates) {
+        nextPortion = updates.portion ?? 'normal'
+        patch.portion = nextPortion
+      }
+      if (Object.keys(patch).length === 0) return
+
+      applyFoodItemPatch(messageId, itemId, patch)
+
+      if (before.foodLogId != null) {
+        try {
+          await updateFoodLogItem(before.foodLogId, {
+            name: nextName,
+            portion: nextPortion,
+            baseKcal: nextBaseKcal,
+            matchedFoodId: nextMatchedId,
+          })
+        } catch (e) {
+          console.warn('[food_log] update failed:', e?.message ?? e)
+        }
+      }
+    },
+    [findFoodItemSnapshot, applyFoodItemPatch],
+  )
+
+  // FoodCard の行削除ハンドラ。ローカル state から除去し、保存済みなら food_log も DELETE。
+  const deleteFoodItem = useCallback(
+    async (messageId, itemId) => {
+      const before = findFoodItemSnapshot(messageId, itemId)
+      if (!before) return
+      removeFoodItemRow(messageId, itemId)
+      if (before.foodLogId != null) {
+        try {
+          await deleteFoodLogItem(before.foodLogId)
+        } catch (e) {
+          console.warn('[food_log] delete failed:', e?.message ?? e)
+        }
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+    },
+    [findFoodItemSnapshot, removeFoodItemRow],
+  )
 
   // テキスト経由の体重カードの「記録する」ハンドラ。
   //   weight_log に source='text' で1行入れ、llmCards のエントリに saved 状態をマージする。
@@ -1242,6 +1386,7 @@ export default function Chat() {
           <FoodCard
             message={current}
             onUpdateItem={updateFoodItem}
+            onDeleteItem={deleteFoodItem}
             title={current.isDummy ? '食品カード（ダミー）' : '抽出された食品'}
           />
         )
@@ -1260,7 +1405,7 @@ export default function Chat() {
       }
       return <Bubble {...props} renderMessageText={renderAssistantMarkdown} />
     },
-    [updateFoodItem, handleLabelSave, handleWeightSave, handleActivitySave, handleUnknownOcrSave],
+    [updateFoodItem, deleteFoodItem, handleLabelSave, handleWeightSave, handleActivitySave, handleUnknownOcrSave],
   )
 
   const renderChatEmpty = useCallback(

@@ -101,6 +101,58 @@ export const insertFoodLogFromLabel = async ({
   return insertedId
 }
 
+// FoodCard 上での編集 (料理名 / portion) を food_log に反映する。
+// item は { name, portion, baseKcal, matchedFoodId? } のうち渡されたフィールドだけ更新する想定。
+// baseKcal と portion から保存値の kcal を計算し直して書き込む。
+// quantity / unit は現状 FoodCard に編集 UI が無いので呼び元から指定されたら更新する。
+export const updateFoodLogItem = async (foodLogId, fields) => {
+  if (foodLogId == null) return false
+  const db = getDb()
+  const sets = []
+  const params = []
+  if ('name' in fields) {
+    sets.push('name = ?')
+    params.push(fields.name ?? null)
+  }
+  if ('quantity' in fields) {
+    sets.push('quantity = ?')
+    params.push(fields.quantity ?? null)
+  }
+  if ('unit' in fields) {
+    sets.push('unit = ?')
+    params.push(fields.unit ?? null)
+  }
+  if ('portion' in fields) {
+    sets.push('portion = ?')
+    params.push(fields.portion ?? 'normal')
+  }
+  if ('baseKcal' in fields || 'portion' in fields) {
+    // portion か baseKcal のどちらかが変わったら最終 kcal を再計算する必要がある。
+    // 呼び元が両方 (もしくは合算済みの最終 kcal) を渡してくる前提。
+    const factor = portionFactor(fields.portion)
+    const kcal = fields.baseKcal != null ? Math.round(fields.baseKcal * factor) : null
+    sets.push('kcal = ?')
+    params.push(kcal)
+  }
+  if ('matchedFoodId' in fields) {
+    sets.push('ref_food_id = ?')
+    params.push(fields.matchedFoodId ?? null)
+    sets.push('ref_kind = ?')
+    params.push(fields.matchedFoodId != null ? 'food' : null)
+  }
+  if (sets.length === 0) return false
+  params.push(foodLogId)
+  await db.runAsync(`UPDATE food_log SET ${sets.join(', ')} WHERE id = ?`, params)
+  return true
+}
+
+export const deleteFoodLogItem = async (foodLogId) => {
+  if (foodLogId == null) return false
+  const db = getDb()
+  await db.runAsync('DELETE FROM food_log WHERE id = ?', [foodLogId])
+  return true
+}
+
 // 動作確認用: food_log の総レコード数
 export const countFoodLog = async () => {
   const db = getDb()
