@@ -461,7 +461,16 @@ export default function Chat() {
   const [llmCards, setLlmCards] = useState({}) // { historyIndex: { foodItems? | error? } }
   const [ocrBusy, setOcrBusy] = useState(false)
   const [visionBusy, setVisionBusy] = useState(false)
+  // VLM 完了直後、executorch (parser) が再ロード完了するまでの「すき間」用フラグ。
+  // この間は全画面ローディングを出さず、チャット UI を維持してタイピングインジケータ
+  // を表示する (写真認識の体験が「ローディング画面でブツ切れ」になるのを防ぐ)。
+  const [parserReloading, setParserReloading] = useState(false)
   const [mode, setMode] = useState('log') // 'log' | 'coach'
+
+  // executorch が再 ready になった瞬間に parserReloading を落とす。
+  useEffect(() => {
+    if (llm.isReady && parserReloading) setParserReloading(false)
+  }, [llm.isReady, parserReloading])
 
   // llm の最新参照を ref で保持。async 経路から現行 isReady などを見るために使う
   // (直接 llm を見るとクロージャに掴まれた古い参照になる)。
@@ -868,10 +877,12 @@ export default function Chat() {
       }
 
       let pickedUri = null
+      let entered = false
       try {
         pickedUri = await picker()
         if (!pickedUri) return
         setVisionBusy(true)
+        entered = true
         setLocalMessages((prev) => [...prev, makeUserImageMessage(pickedUri)])
 
         console.log('========== Vision (llama.rn) ==========')
@@ -987,6 +998,10 @@ export default function Chat() {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {})
       } finally {
         setVisionBusy(false)
+        // orchestrator finally で setPreventLlmLoad(false) → executorch 再ロードが走るが、
+        // ここでは isReady=false の状態。全画面ローディングを出さないために
+        // parserReloading を立て、useEffect で isReady=true になったタイミングで落とす。
+        if (entered) setParserReloading(true)
       }
     },
     [visionBusy, ocrBusy, vlmEnabled, vlmModelId, modelCtx],
@@ -1354,7 +1369,9 @@ export default function Chat() {
   // VLM 推論中は orchestrator が preventLoad=true で executorch を一時退避するため
   // llm.isReady が false に落ちる。この間は全画面ロード表示ではなく通常 chat UI を
   // 維持し、進行状況は📷ボタンの spinner と localMessages で示す。
-  if (!llm.isReady && !visionBusy) {
+  // parserReloading=true の間 (VLM 完了 → executorch 再 ready までの隙間) も同様に
+  // 全画面ローディングを出さず、タイピングインジケータで「AI 応答準備中」を示す。
+  if (!llm.isReady && !visionBusy && !parserReloading) {
     const pct = Math.round((llm.downloadProgress ?? 0) * 100)
     const downloading = pct > 0 && pct < 100
     return (
@@ -1380,7 +1397,7 @@ export default function Chat() {
         user={USER}
         text={inputText}
         placeholder={mode === 'coach' ? 'コーチに質問する（例: 今週どうだった？）' : '食事・体重・運動を入力'}
-        isTyping={llm.isGenerating}
+        isTyping={llm.isGenerating || parserReloading}
         minComposerHeight={48}
         renderMessage={renderWideMessage}
         renderBubble={renderBubble}
