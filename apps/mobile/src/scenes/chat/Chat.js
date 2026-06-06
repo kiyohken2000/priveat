@@ -172,8 +172,8 @@ food のルール:
 - 数量や単位は、それが書かれている品目だけに付ける (他の品目に勝手にコピーしない)
 - 単位は g / 個 / 本 / 杯 / 枚 / 切 / 缶 / 袋 / 人前 など自然なものを選ぶ
 - 「大盛り」「少なめ」などのニュアンスは portion に入れる
-- カロリーや栄養素は推定しない
 - 数量も単位もどちらも書かれていない品目だけ quantity=1, unit="人前" にする
+- estimated_kcal は指定量での常識的な kcal を整数で。わからなければ省略する (空文字や 0 を入れない)。栄養素 (protein/fat/carb) は推定しない
 
 weight のルール:
 - weight_kg は kg 単位の数値 ("68.5kg" なら 68.5、"70.2" だけでも 70.2)
@@ -195,20 +195,11 @@ activity のルール:
 
 const FEW_SHOT_EXAMPLES = `以下の例を参考にしてください:
 
-入力: ささみ200gとブロッコリー100g
-出力: {"kind":"food","items":[{"name":"ささみ","quantity":200,"unit":"g"},{"name":"ブロッコリー","quantity":100,"unit":"g"}]}
-
-入力: ごはん大盛りと焼き魚
-出力: {"kind":"food","items":[{"name":"ごはん","quantity":1,"unit":"杯","portion":"大盛り"},{"name":"焼き魚","quantity":1,"unit":"切"}]}
+入力: ごはん大盛りとバナナ1本と焼き魚
+出力: {"kind":"food","items":[{"name":"ごはん","quantity":1,"unit":"杯","portion":"大盛り","estimated_kcal":340},{"name":"バナナ","quantity":1,"unit":"本","estimated_kcal":86},{"name":"焼き魚","quantity":1,"unit":"切","estimated_kcal":150}]}
 
 入力: 体重68.5kg
 出力: {"kind":"weight","weight_kg":68.5}
-
-入力: ランニング60分した
-出力: {"kind":"activity","activity_name":"ランニング","duration_min":60}
-
-入力: 5km走った
-出力: {"kind":"activity","activity_name":"ランニング","distance_km":5}
 
 入力: 30分で3キロ走った
 出力: {"kind":"activity","activity_name":"ランニング","duration_min":30,"distance_km":3}
@@ -356,13 +347,18 @@ const parseAndDispatch = async (content, idx) => {
             return null
           })
           const computedKcal = computeKcalFromMatch(matched, it.quantity, it.unit, it.name)
+          // DB ヒットを優先。無ければ LLM の estimated_kcal を採用 (どちらも無ければ null)。
+          const baseKcal = computedKcal ?? it.estimated_kcal ?? null
+          const kcalSource =
+            computedKcal != null ? 'db' : it.estimated_kcal != null ? 'llm_estimate' : null
           return {
             id: `${idx}-${j}`,
             name: it.name,
             quantity: it.quantity,
             unit: it.unit,
             portion: normalizePortion(it.portion),
-            baseKcal: computedKcal,
+            baseKcal,
+            kcalSource,
             matchedName: matched?.name ?? null,
             matchedFoodCode: matched?.food_code ?? null,
             matchedFoodId: matched?.id ?? null,
@@ -957,6 +953,8 @@ export default function Chat() {
               unit: it.unit,
               portion: 'normal',
               baseKcal: computedKcal,
+              // VLM 経路は今のところ estimated_kcal を出さないので、'db' or null のみ。
+              kcalSource: computedKcal != null ? 'db' : null,
               matchedName: matched?.name ?? null,
               matchedFoodCode: matched?.food_code ?? null,
               matchedFoodId: matched?.id ?? null,
@@ -1148,6 +1146,7 @@ export default function Chat() {
       let nextMatchedName = before.matchedName ?? null
       let nextMatchedCode = before.matchedFoodCode ?? null
       let nextPortion = before.portion ?? 'normal'
+      let nextKcalSource = before.kcalSource ?? null
 
       if ('name' in updates) {
         const trimmed = (updates.name ?? '').trim()
@@ -1163,11 +1162,14 @@ export default function Chat() {
           nextMatchedId = matched?.id ?? null
           nextMatchedName = matched?.name ?? null
           nextMatchedCode = matched?.food_code ?? null
+          // 名前が変わったら元の LLM 推定値は破棄。 DB ヒットしたら 'db'、しなければ null。
+          nextKcalSource = nextBaseKcal != null ? 'db' : null
           patch.name = nextName
           patch.baseKcal = nextBaseKcal
           patch.matchedFoodId = nextMatchedId
           patch.matchedName = nextMatchedName
           patch.matchedFoodCode = nextMatchedCode
+          patch.kcalSource = nextKcalSource
         }
       }
       if ('portion' in updates) {
@@ -1185,6 +1187,7 @@ export default function Chat() {
             portion: nextPortion,
             baseKcal: nextBaseKcal,
             matchedFoodId: nextMatchedId,
+            kcalSource: nextKcalSource,
           })
         } catch (e) {
           console.warn('[food_log] update failed:', e?.message ?? e)
@@ -1245,12 +1248,15 @@ export default function Chat() {
     async (messageId, { name, quantity, unit, kcal }) => {
       let baseKcal = kcal
       let matched = null
+      // kcal を手で入れた → 'manual'。空欄で DB 補完が当たった → 'db'。 どちらもなら null。
+      let kcalSource = kcal != null ? 'manual' : null
       if (baseKcal == null) {
         matched = await findBestFood(name).catch((e) => {
           console.warn('[db] search failed:', e?.message ?? e)
           return null
         })
         baseKcal = computeKcalFromMatch(matched, quantity, unit, name)
+        if (baseKcal != null) kcalSource = 'db'
       }
       const [id] = await insertFoodLogItems(
         [
@@ -1261,6 +1267,7 @@ export default function Chat() {
             portion: 'normal',
             baseKcal,
             matchedFoodId: matched?.id ?? null,
+            kcalSource,
           },
         ],
         { source: 'ocr_manual' },

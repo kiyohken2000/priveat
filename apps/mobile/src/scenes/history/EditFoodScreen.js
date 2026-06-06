@@ -18,6 +18,7 @@ import { getFoodLogItem, updateFoodLogItem } from '../../db/foodLogActions'
 import { computeKcalFromMatch, findBestFood } from '../../db/search'
 import { portionFactor } from '../../db/foodLog'
 import FoodNameInput from '../../components/FoodNameInput'
+import { useActiveLLM, useActiveModel } from '../../state/modelContext'
 
 const toNum = (v) => {
   if (v == null) return null
@@ -50,14 +51,20 @@ export default function EditFoodScreen() {
   const [kcal, setKcal] = useState('')
   const [eatenAt, setEatenAt] = useState(new Date())
   const [pickerVisible, setPickerVisible] = useState(false)
-  // kcal が「自動再計算」か「手入力ロック中」か。
-  //   - 初期: 'auto'（読み込み直後は自動再計算追従）
-  //   - ユーザーが kcal を手入力すると 'manual' → 自動再計算停止
-  //   - 「再計算」ボタンで 'auto' に戻す
+  // kcal の出どころモード:
+  //   - 'auto'         : DB 再計算追従 (recomputed が反映されたら kcal 上書き)
+  //   - 'manual'       : ユーザー手入力 (DB 再計算を反映しない)
+  //   - 'llm_estimate' : 「AI 推定」ボタンで LLM が出した値
+  //   - 再計算 / AI 推定 / 手入力ボタンで切り替わる。
   const [kcalMode, setKcalMode] = useState('auto')
   // 直近の再計算結果（プレビュー用）。null = 再計算不能（マッチなし等）
   const [recomputed, setRecomputed] = useState(null)
   const recomputeSeqRef = useRef(0)
+  // AI 推定の進行中フラグと最後のエラー (UI ヒント用)
+  const [aiBusy, setAiBusy] = useState(false)
+  const [aiError, setAiError] = useState(null)
+  const llm = useActiveLLM()
+  const { activeModel } = useActiveModel()
 
   const load = useCallback(async () => {
     try {
@@ -115,6 +122,58 @@ export default function EditFoodScreen() {
     return () => clearTimeout(handle)
   }, [loaded, name, quantity, unit, portion, kcalMode])
 
+  // 「AI 推定」ボタン: アクティブ LLM (= 通常は parser モデル) に常識的な kcal を1つ整数で
+  // 返してもらう。 DB ヒットしない料理 (ステーキ定食 / チェーン店メニュー など) の救済用。
+  const onPressAiEstimate = async () => {
+    setAiError(null)
+    if (aiBusy) return
+    if (!name.trim() || !unit.trim()) {
+      setAiError('食品名と単位を入力してください')
+      return
+    }
+    if (!llm || !llm.isReady || llm.isGenerating) {
+      setAiError('AI モデルがまだ準備中です。少し待ってからお試しください')
+      return
+    }
+    const qty = toNum(quantity) ?? 1
+    const prompt =
+      `「${name.trim()} ${qty}${unit.trim()}」の常識的なカロリーを、整数1つだけで答えてください。` +
+      `説明・単位・記号は不要。例: 250`
+    setAiBusy(true)
+    const messages = [
+      { role: 'system', content: '日本語で常識的なカロリーを1つの整数で返してください。' },
+      { role: 'user', content: prompt },
+    ]
+    console.log('========== AI kcal estimate ==========')
+    console.log('[model]', activeModel?.id ?? '(unknown)')
+    console.log('[messages]', JSON.stringify(messages, null, 2))
+    try {
+      const raw = await llm.generate(messages)
+      console.log('[raw]', raw)
+      const cleaned = String(raw ?? '')
+        .replace(/<think>[\s\S]*?<\/think>/g, '')
+        .replace(/[^0-9]/g, ' ')
+      const match = cleaned.match(/\d+/)
+      const n = match ? parseInt(match[0], 10) : NaN
+      if (!Number.isFinite(n) || n <= 0 || n > 2000) {
+        console.log('[result] rejected (out of range or non-numeric)')
+        console.log('======================================')
+        setAiError(`AI から有効な値を取得できませんでした (応答: ${String(raw ?? '').slice(0, 40)}…)`)
+        return
+      }
+      console.log('[result]', n, 'kcal')
+      console.log('======================================')
+      setKcal(String(n))
+      setKcalMode('llm_estimate')
+    } catch (err) {
+      console.warn('[ai kcal] generate failed:', err)
+      console.log('======================================')
+      setAiError(err?.message ?? String(err))
+    } finally {
+      setAiBusy(false)
+    }
+  }
+
   const onSave = async () => {
     if (busy) return
     if (!name.trim()) {
@@ -123,6 +182,19 @@ export default function EditFoodScreen() {
     }
     setBusy(true)
     try {
+      // kcal_source の決定:
+      //   - 'manual'        : kcal を手で打ち変えた
+      //   - 'llm_estimate'  : AI 推定ボタンで埋めた
+      //   - 'auto' + DB ヒット : 'db'
+      //   - 'auto' + ヒットなし : null
+      const kcalSource =
+        kcalMode === 'manual'
+          ? 'manual'
+          : kcalMode === 'llm_estimate'
+            ? 'llm_estimate'
+            : recomputed != null
+              ? 'db'
+              : null
       await updateFoodLogItem(id, {
         eaten_at: eatenAt.toISOString(),
         name: name.trim(),
@@ -130,6 +202,7 @@ export default function EditFoodScreen() {
         unit: unit.trim() || null,
         portion,
         kcal: toNum(kcal),
+        kcal_source: kcalSource,
       })
       navigation.goBack()
     } catch (err) {
@@ -236,15 +309,42 @@ export default function EditFoodScreen() {
                 再計算
               </Text>
             </Pressable>
+            <Pressable
+              onPress={onPressAiEstimate}
+              disabled={aiBusy || !llm?.isReady}
+              style={({ pressed }) => [
+                styles.recalcBtn,
+                styles.aiBtn,
+                (aiBusy || !llm?.isReady) && styles.recalcBtnDisabled,
+                pressed && !aiBusy && llm?.isReady && styles.btnPressed,
+              ]}
+            >
+              {aiBusy ? (
+                <ActivityIndicator size="small" color={colors.white} />
+              ) : (
+                <Text
+                  style={[
+                    styles.recalcBtnText,
+                    !llm?.isReady && styles.recalcBtnTextDisabled,
+                  ]}
+                >
+                  AI推定
+                </Text>
+              )}
+            </Pressable>
           </View>
           <Text style={styles.kcalHint}>
-            {kcalMode === 'auto'
-              ? recomputed != null
-                ? '数量・単位・量に応じて自動再計算しています'
-                : '一致する食品が見つからないため自動再計算できません（手入力可）'
-              : recomputed != null
-                ? `手入力中（自動値: ${recomputed} kcal → 「再計算」で反映）`
-                : '手入力中'}
+            {aiError
+              ? `※ ${aiError}`
+              : kcalMode === 'llm_estimate'
+                ? 'AI 推定値です（参考目安）'
+                : kcalMode === 'auto'
+                  ? recomputed != null
+                    ? '数量・単位・量に応じて自動再計算しています'
+                    : '一致する食品が見つかりません。「AI推定」で推定値を入れられます'
+                  : recomputed != null
+                    ? `手入力中（自動値: ${recomputed} kcal → 「再計算」で反映）`
+                    : '手入力中'}
           </Text>
         </Field>
 
@@ -353,10 +453,14 @@ const styles = StyleSheet.create({
     paddingVertical: Platform.OS === 'ios' ? 10 : 8,
     borderRadius: 8,
     backgroundColor: colors.lightPurple,
+    minWidth: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   recalcBtnDisabled: { backgroundColor: '#e5e2f0' },
   recalcBtnText: { color: colors.white, fontSize: fontSize.small, fontWeight: '600' },
   recalcBtnTextDisabled: { color: colors.gray },
+  aiBtn: { backgroundColor: colors.darkPurple },
   dateButton: { justifyContent: 'center' },
   dateText: { fontSize: fontSize.middle, color: colors.darkPurple },
   saveBtn: {

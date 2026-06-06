@@ -81,6 +81,9 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
         <Text style={styles.detail}>
           {item.quantity}
           {item.unit} · {kcal == null ? '— kcal' : `${kcal} kcal`}
+          {kcal != null && item.kcalSource === 'llm_estimate' ? (
+            <Text style={styles.estimateBadge}>（推定）</Text>
+          ) : null}
         </Text>
         {item.matchedName ? (
           <Text style={styles.matched} numberOfLines={1}>
@@ -284,5 +287,11 @@ const styles = StyleSheet.create({
     color: colors.redPrimary,
     marginBottom: 6,
     lineHeight: 16,
+  },
+  estimateBadge: {
+    fontSize: fontSize.small,
+    color: colors.darkPurple,
+    fontWeight: '600',
+    opacity: 0.85,
   },
 })

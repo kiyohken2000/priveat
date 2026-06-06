@@ -24,6 +24,10 @@ export const RecordSchema = {
           quantity: { type: 'number', description: '数量' },
           unit: { type: 'string', description: '単位（g/個/本/杯/枚/人前 等）' },
           portion: { type: 'string', description: '大盛り/少なめ 等のニュアンス（任意）' },
+          estimated_kcal: {
+            type: 'number',
+            description: 'この品目1食分の常識的なカロリー目安 (整数、任意)。食品DBに無いときのフォールバック用',
+          },
         },
         required: ['name', 'quantity', 'unit'],
       },
@@ -159,11 +163,16 @@ const parseFoodKind = (parsed) => {
       if (!it || typeof it !== 'object') return null
       const name = coerceName(it.name)
       if (!name) return null
+      const estimated = coerceNumber(it.estimated_kcal)
+      // 異常値はじき: 0〜2000 kcal の範囲内のみ採用
+      const estimatedKcal =
+        estimated != null && estimated > 0 && estimated <= 2000 ? Math.round(estimated) : null
       return {
         name,
         quantity: coerceQuantity(it.quantity) ?? 1,
         unit: coerceUnit(it.unit) ?? '人前',
         portion: typeof it.portion === 'string' ? it.portion : undefined,
+        estimated_kcal: estimatedKcal,
       }
     })
     .filter(Boolean)

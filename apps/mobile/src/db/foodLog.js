@@ -24,8 +24,8 @@ export const insertFoodLogItems = async (items, options = {}) => {
     const stmt = await db.prepareAsync(
       `INSERT INTO food_log
          (eaten_at, meal_type, name, quantity, unit, portion, kcal,
-          ref_food_id, ref_kind, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ref_food_id, ref_kind, source, kcal_source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     try {
       for (const item of items) {
@@ -43,6 +43,7 @@ export const insertFoodLogItems = async (items, options = {}) => {
           item.matchedFoodId ?? null,
           item.matchedFoodId != null ? 'food' : null,
           source,
+          item.kcalSource ?? null,
         ])
         if (res?.lastInsertRowId != null) insertedIds.push(res.lastInsertRowId)
       }
@@ -139,6 +140,10 @@ export const updateFoodLogItem = async (foodLogId, fields) => {
     params.push(fields.matchedFoodId ?? null)
     sets.push('ref_kind = ?')
     params.push(fields.matchedFoodId != null ? 'food' : null)
+  }
+  if ('kcalSource' in fields) {
+    sets.push('kcal_source = ?')
+    params.push(fields.kcalSource ?? null)
   }
   if (sets.length === 0) return false
   params.push(foodLogId)

@@ -156,6 +156,19 @@ export const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS idx_foods_source ON foods(source);
     `,
   },
+  // v6: food_log.kcal の出どころを記録する kcal_source カラムを追加。
+  //   - 'db'           : 食品 DB マッチ → computeKcalFromMatch の値
+  //   - 'llm_estimate' : DB ヒットなしで LLM の estimated_kcal を採用
+  //   - 'manual'       : ユーザーが手で kcal を入力 / 編集 (db/llm_estimate を上書き)
+  //   - NULL           : 既存行 (源不明)。kcal が NULL の行も含む
+  //   FoodCard で 'llm_estimate' を「(推定)」バッジで明示し、健康判断への
+  //   誤用を防ぐ目的。
+  {
+    version: 6,
+    sql: `
+      ALTER TABLE food_log ADD COLUMN kcal_source TEXT;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version
