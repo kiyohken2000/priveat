@@ -166,22 +166,25 @@ export default function DayDetailScreen() {
           {/* サマリーカード */}
           <View style={styles.card}>
             <SummaryRow label="摂取" value={round(summary.intake)} unit="kcal" />
-            <SummaryRow
-              label="消費 (運動)"
-              value={round(summary.activeKcal)}
-              unit="kcal"
-              sub={summary.steps != null ? `${summary.steps.toLocaleString()} 歩` : null}
-              source={summary.energySource}
-              imageUri={summary.energyImageUri}
-              onPressImage={() => showPreview(summary.energyImageUri, '運動データの読取画像')}
-            />
-            <SummaryRow
-              label="消費 (基礎代謝)"
-              value={round(bmr)}
-              unit="kcal"
-              placeholder="未設定"
-              source={bmr != null ? 'manual' : null}
-            />
+            <SummaryRow label="消費" value={round(burned)} unit="kcal" />
+            <View style={styles.breakdownRow}>
+              <Text style={styles.breakdownText}>
+                運動 {summary.activeKcal != null ? `${round(summary.activeKcal)} kcal` : '—'}
+                {summary.steps != null ? ` (${summary.steps.toLocaleString()} 歩)` : ''}
+              </Text>
+              {summary.activeKcal != null && summary.energySource ? (
+                <SourceBadge
+                  source={summary.energySource}
+                  hasImage={!!summary.energyImageUri}
+                  onPressImage={() => showPreview(summary.energyImageUri, '運動データの読取画像')}
+                />
+              ) : null}
+            </View>
+            <View style={styles.breakdownRow}>
+              <Text style={styles.breakdownText}>
+                基礎代謝 {bmr != null ? `${round(bmr)} kcal` : '— (未設定)'}
+              </Text>
+            </View>
             <View style={styles.divider} />
             <SummaryRow
               label="差分"
@@ -380,6 +383,16 @@ const styles = StyleSheet.create({
   summaryValueBold: { fontSize: fontSize.xLarge, fontWeight: '700' },
   divider: { height: 1, backgroundColor: '#e5e2f0', marginVertical: 8 },
   placeholder: { fontSize: fontSize.middle, color: colors.gray },
+  breakdownRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    paddingLeft: 8,
+    marginTop: -2,
+    marginBottom: 2,
+    gap: 4,
+  },
+  breakdownText: { fontSize: fontSize.small, color: colors.gray },
   mealRow: {
     flexDirection: 'row',
     alignItems: 'center',

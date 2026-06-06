@@ -170,19 +170,27 @@ export default function Home() {
             <View style={styles.card}>
               <KcalRow label="摂取" value={round(intake)} />
               <KcalRow
-                label="消費 (運動)"
-                value={round(energy.activeKcal)}
-                subText={energy.steps != null ? `${energy.steps.toLocaleString()} 歩` : null}
-                source={energy.source}
-                imageUri={energy.imageUri}
-                onPressImage={() => showPreview(energy.imageUri, '運動データの読取画像')}
+                label="消費"
+                value={round(totalExpenditure)}
               />
-              <KcalRow
-                label="消費 (基礎代謝)"
-                value={round(bmr)}
-                placeholder="プロフィール未設定"
-                source={bmr != null ? 'manual' : null}
-              />
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownText}>
+                  運動 {energy.activeKcal != null ? `${round(energy.activeKcal)} kcal` : '—'}
+                  {energy.steps != null ? ` (${energy.steps.toLocaleString()} 歩)` : ''}
+                </Text>
+                {energy.activeKcal != null && energy.source ? (
+                  <SourceBadge
+                    source={energy.source}
+                    hasImage={!!energy.imageUri}
+                    onPressImage={() => showPreview(energy.imageUri, '運動データの読取画像')}
+                  />
+                ) : null}
+              </View>
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownText}>
+                  基礎代謝 {bmr != null ? `${round(bmr)} kcal` : '— (プロフィール未設定)'}
+                </Text>
+              </View>
 
               <View style={styles.divider} />
 
@@ -387,6 +395,15 @@ const styles = StyleSheet.create({
   kcalValueBold: { fontSize: fontSize.xLarge, fontWeight: '700' },
   divider: { height: 1, backgroundColor: '#e5e2f0', marginVertical: 8 },
   placeholder: { fontSize: fontSize.middle, color: colors.gray },
+  breakdownRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    paddingLeft: 8,
+    marginTop: -2,
+    gap: 4,
+  },
+  breakdownText: { fontSize: fontSize.small, color: colors.gray },
   targetHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
