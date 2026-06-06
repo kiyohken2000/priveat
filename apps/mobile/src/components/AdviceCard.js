@@ -53,7 +53,13 @@ const formatGeneratedAt = (iso) => {
 
 export default function AdviceCard({ date, kind = 'today' }) {
   const llm = useActiveLLM()
-  const { currentRole, setCurrentRole, coachModel, coachModelId } = useActiveModel()
+  const {
+    currentRole,
+    setCurrentRole,
+    coachModel,
+    coachModelId,
+    parserModelId,
+  } = useActiveModel()
 
   const [cached, setCached] = useState(null)
   const [isStale, setIsStale] = useState(false)
@@ -67,6 +73,19 @@ export default function AdviceCard({ date, kind = 'today' }) {
   // 「ユーザーがボタンを押した」フラグ。setCurrentRole の swap 完了 (isReady) を
   // 待ってから generate を 1 回だけ走らせるためのトリガ。
   const pendingGenRef = useRef(false)
+  // swap が必要なケース (parser → coach、モデルが違う) では、useLLM の isReady が
+  // 古い parser の状態のまま true に見える 1 レンダの隙間がある。
+  // 「isReady が一度 false に落ちる」のを観測してから true 復帰を待つ。
+  // 同モデル (parser==coach) や、coach のまま load 待ち中の場合は false 観測が
+  // 来ないので requireSwapRef=false で skip する。
+  const requireSwapRef = useRef(false)
+  const swapObservedRef = useRef(false)
+
+  const clearPendingFlags = () => {
+    pendingGenRef.current = false
+    requireSwapRef.current = false
+    swapObservedRef.current = false
+  }
 
   const reloadInspect = useCallback(async () => {
     if (!date) return
@@ -103,13 +122,20 @@ export default function AdviceCard({ date, kind = 'today' }) {
   }, [date, llm, coachModelId, kind, reloadInspect])
 
   // 「待機中: coach に切替→ ready 待ち」の遷移を監視。
+  // requireSwap=true (実 swap が起きるケース) のときは「isReady=false を一度観測」する
+  // までは早期 return する。これが無いと swap 開始前の stale な isReady=true を見て
+  // generate を投げてしまい「model not loaded」エラーになる。
   useEffect(() => {
     if (phase !== 'awaiting-swap') return
+    if (requireSwapRef.current && !swapObservedRef.current) {
+      if (llm?.isReady === false) swapObservedRef.current = true
+      return
+    }
     if (!llm?.isReady) return
     if (currentRole !== 'coach') return
     if (llm.isGenerating) return
     if (!pendingGenRef.current) return
-    pendingGenRef.current = false
+    clearPendingFlags()
     runGenerate()
   }, [phase, llm?.isReady, llm?.isGenerating, currentRole, runGenerate])
 
@@ -119,26 +145,32 @@ export default function AdviceCard({ date, kind = 'today' }) {
     if (llm.isGenerating) return
     setError(null)
     if (currentRole !== 'coach') {
-      // coach モデルへ swap を要求 → useEffect 側で ready を待って自動 run
+      // coach モデルへ swap を要求 → useEffect 側で ready を待って自動 run。
+      // parser と coach が別モデルのときは実 swap が起きるので requireSwap=true。
+      // 同モデルの場合は swap せず isReady が落ちないので false で skip させる。
       pendingGenRef.current = true
+      requireSwapRef.current = parserModelId !== coachModelId
+      swapObservedRef.current = false
       setPhase('awaiting-swap')
       try {
         await setCurrentRole('coach')
       } catch (e) {
-        pendingGenRef.current = false
+        clearPendingFlags()
         setError(e?.message ?? String(e))
         setPhase('error')
       }
       return
     }
     if (!llm.isReady) {
-      // ロード中 (起動直後など) ならフラグだけ立てて ready を待つ
+      // ロード中 (起動直後など) ならフラグだけ立てて ready を待つ (swap は起きていない)
       pendingGenRef.current = true
+      requireSwapRef.current = false
+      swapObservedRef.current = false
       setPhase('awaiting-swap')
       return
     }
     runGenerate()
-  }, [llm, currentRole, setCurrentRole, phase, runGenerate])
+  }, [llm, currentRole, setCurrentRole, phase, runGenerate, parserModelId, coachModelId])
 
   // --- 描画 ---------------------------------------------------------------
 
