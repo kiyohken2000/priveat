@@ -59,6 +59,47 @@ const extractBetweenBrackets = (text) => {
   return text.slice(text.indexOf(opening), text.lastIndexOf(closing) + 1)
 }
 
+// LLM 出力が生成上限などで途中で切れているかを推定する。
+//   - JSON 末尾が } や ] で閉じておらず、最後の文字が , : " などで終わっている
+//   - 開きと閉じの括弧の数が合わない
+// jsonrepair で形式上は parse 可能になっても、items の末尾品目が
+// 落ちている可能性があるためカードに警告を出すフラグとして使う。
+const detectTruncated = (rawOutput) => {
+  const trimmed = String(rawOutput ?? '').trim()
+  if (!trimmed) return false
+  // <think> ブロックは末尾判定のノイズになるので外す
+  const noThink = trimmed.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+  if (!noThink) return false
+  const last = noThink[noThink.length - 1]
+  if (last !== '}' && last !== ']') return true
+  // 括弧バランス (文字列リテラル中は無視)
+  let inStr = false
+  let escape = false
+  let braces = 0
+  let brackets = 0
+  for (let i = 0; i < noThink.length; i += 1) {
+    const c = noThink[i]
+    if (escape) {
+      escape = false
+      continue
+    }
+    if (c === '\\') {
+      escape = true
+      continue
+    }
+    if (c === '"') {
+      inStr = !inStr
+      continue
+    }
+    if (inStr) continue
+    if (c === '{') braces += 1
+    else if (c === '}') braces -= 1
+    else if (c === '[') brackets += 1
+    else if (c === ']') brackets -= 1
+  }
+  return braces !== 0 || brackets !== 0
+}
+
 // 一部の小型 LLM は name / quantity / unit を {"name": {"name": "ささみ"}} のように
 // 同名キーで何重にもネストして返してくる。生のフィルタだと全件落ちるので、
 // 再帰的に最深部のプリミティブを取り出して救済する。
@@ -178,13 +219,18 @@ const parseActivityKind = (parsed) => {
 
 // kind ごとに適切なフィールドを取り出して discriminated union を返す。
 // モデルが {"items":[...]} だけを返した（kind が欠落した）場合は food として扱う互換挙動。
+// 出力が生成上限で切れていそうなら結果に truncated=true を載せる。
 export const parseRecordOutput = (rawOutput) => {
+  const truncated = detectTruncated(rawOutput)
   const extracted = extractBetweenBrackets(rawOutput)
   const repaired = jsonrepair(extracted)
   const parsed = JSON.parse(repaired)
 
+  const withTruncated = (result) =>
+    truncated ? { ...result, truncated: true } : result
+
   if (Array.isArray(parsed)) {
-    return parseFoodKind({ items: parsed })
+    return withTruncated(parseFoodKind({ items: parsed }))
   }
   if (!parsed || typeof parsed !== 'object') {
     throw new Error('JSON が見つかりません')
@@ -194,12 +240,12 @@ export const parseRecordOutput = (rawOutput) => {
 
   // 旧形式 ({"items":[...]} だけ) は食事として受け入れる
   if (!kind && Array.isArray(parsed.items)) {
-    return parseFoodKind(parsed)
+    return withTruncated(parseFoodKind(parsed))
   }
 
   switch (kind) {
     case 'food':
-      return parseFoodKind(parsed)
+      return withTruncated(parseFoodKind(parsed))
     case 'weight':
       return parseWeightKind(parsed)
     case 'activity':

@@ -195,9 +195,6 @@ activity のルール:
 
 const FEW_SHOT_EXAMPLES = `以下の例を参考にしてください:
 
-入力: 食パン1枚とゆで卵2個
-出力: {"kind":"food","items":[{"name":"食パン","quantity":1,"unit":"枚"},{"name":"ゆで卵","quantity":2,"unit":"個"}]}
-
 入力: ささみ200gとブロッコリー100g
 出力: {"kind":"food","items":[{"name":"ささみ","quantity":200,"unit":"g"},{"name":"ブロッコリー","quantity":100,"unit":"g"}]}
 
@@ -207,38 +204,11 @@ const FEW_SHOT_EXAMPLES = `以下の例を参考にしてください:
 入力: 体重68.5kg
 出力: {"kind":"weight","weight_kg":68.5}
 
-入力: 今朝70.2だった
-出力: {"kind":"weight","weight_kg":70.2}
-
 入力: ランニング60分した
 出力: {"kind":"activity","activity_name":"ランニング","duration_min":60}
 
-入力: 30分ウォーキング
-出力: {"kind":"activity","activity_name":"ウォーキング","duration_min":30}
-
-入力: 1時間筋トレ
-出力: {"kind":"activity","activity_name":"筋トレ","duration_min":60}
-
-入力: 30分歩いて買い物してきた
-出力: {"kind":"activity","activity_name":"ウォーキング","duration_min":30}
-
-入力: 45分自転車漕いだ
-出力: {"kind":"activity","activity_name":"サイクリング","duration_min":45}
-
-入力: 2キロ歩いた
-出力: {"kind":"activity","activity_name":"ウォーキング","distance_km":2}
-
-入力: 3キロ走った
-出力: {"kind":"activity","activity_name":"ランニング","distance_km":3}
-
 入力: 5km走った
 出力: {"kind":"activity","activity_name":"ランニング","distance_km":5}
-
-入力: 1キロ歩いた
-出力: {"kind":"activity","activity_name":"ウォーキング","distance_km":1}
-
-入力: 10km自転車
-出力: {"kind":"activity","activity_name":"サイクリング","distance_km":10}
 
 入力: 30分で3キロ走った
 出力: {"kind":"activity","activity_name":"ランニング","duration_min":30,"distance_km":3}
@@ -399,7 +369,11 @@ const parseAndDispatch = async (content, idx) => {
           }
         }),
       )
-      return { kind: 'food', foodItems: enriched }
+      return {
+        kind: 'food',
+        foodItems: enriched,
+        ...(parsed.truncated ? { truncated: true } : {}),
+      }
     } catch (e) {
       return { error: e?.message ?? String(e) }
     }
@@ -682,6 +656,7 @@ export default function Chat() {
           createdAt,
           user: ASSISTANT,
           foodItems: card.foodItems,
+          truncated: card.truncated ?? false,
         })
       } else if (card?.kind === 'weight') {
         items.push({

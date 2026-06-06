@@ -141,6 +141,11 @@ export default function FoodCard({ message, onUpdateItem, onDeleteItem, title })
   return (
     <View style={[styles.card, { width: cardWidth }]}>
       {title ? <Text style={styles.title}>{title}</Text> : null}
+      {message.truncated ? (
+        <Text style={styles.warn}>
+          ※ AI の出力が途中で切れた可能性があります。取りこぼした品目があれば追加で入力するか、料理を分けて送信してください。設定からより大きな parser モデル (Qwen3 1.7B など) に切り替えると改善する場合があります。
+        </Text>
+      ) : null}
       {items.map((item, i) => (
         <FoodRow
           key={item.id ?? `${item.name}-${i}`}
@@ -273,5 +278,11 @@ const styles = StyleSheet.create({
     color: colors.gray,
     paddingVertical: 8,
     textAlign: 'center',
+  },
+  warn: {
+    fontSize: fontSize.small,
+    color: colors.redPrimary,
+    marginBottom: 6,
+    lineHeight: 16,
   },
 })
