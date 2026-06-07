@@ -1447,6 +1447,61 @@ export default function Chat() {
     [findFoodItemSnapshot, removeFoodItemRow],
   )
 
+  // チャット画面の表示履歴クリア。
+  //   - LLM の internal history (messageHistory) を空にし、UI 側の派生 state も全部リセット
+  //   - 現在モードの snapshot ref のみ空にする (もう一方のモードはタブ切替時に温存)
+  //   - DB に保存済みの food_log / weight_log / energy_log / chat_messages は触らない
+  //     (= 画面の「見え方」だけクリア。記録はそのまま残る)
+  const handleClearHistory = useCallback(() => {
+    if (llm.isGenerating || modeBusy) return
+    Alert.alert(
+      'チャット履歴をクリア',
+      '画面に表示中の会話履歴をクリアします。記録済みの食事・体重・運動のデータは消えません。',
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        {
+          text: 'クリア',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              if (mode === 'log') {
+                logHistoryRef.current = []
+                logCardsRef.current = {}
+                logLocalMessagesRef.current = []
+              } else {
+                coachHistoryRef.current = []
+                coachLocalMessagesRef.current = []
+              }
+              processedRef.current = new Set()
+              persistedCoachRef.current = new Set()
+              llmTimestampsRef.current = []
+              setLlmCards({})
+              setLocalMessages([])
+              setInputText('')
+              let systemPrompt
+              let temperature
+              if (mode === 'coach') {
+                const context = await buildCoachingContext()
+                systemPrompt = buildCoachSystemPrompt(context)
+                temperature = 0.5
+              } else {
+                systemPrompt = buildSystemPrompt()
+                temperature = 0.2
+              }
+              llm.configure({
+                chatConfig: { systemPrompt, initialMessageHistory: [] },
+                generationConfig: { temperature },
+              })
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+            } catch (e) {
+              console.warn('[chat] clear history failed:', e?.message ?? e)
+            }
+          },
+        },
+      ],
+    )
+  }, [mode, llm, modeBusy])
+
   // テキスト経由の体重カードの「記録する」ハンドラ。
   //   weight_log に source='text' で1行入れ、llmCards のエントリに saved 状態をマージする。
   const handleWeightSave = useCallback(
@@ -1838,6 +1893,18 @@ export default function Chat() {
               {modeBusy && (
                 <ActivityIndicator size="small" color={colors.lightPurple} style={{ marginLeft: 8 }} />
               )}
+              <TouchableOpacity
+                onPress={handleClearHistory}
+                disabled={modeBusy || llm.isGenerating || messages.length === 0}
+                style={[
+                  styles.clearBtn,
+                  (modeBusy || llm.isGenerating || messages.length === 0) && styles.modeBtnDisabled,
+                ]}
+                activeOpacity={0.7}
+                accessibilityLabel="チャット履歴をクリア"
+              >
+                <FontIcon name="trash-o" size={14} color={colors.darkPurple} />
+              </TouchableOpacity>
             </View>
             <InputToolbar
               {...props}
@@ -1973,6 +2040,15 @@ const styles = StyleSheet.create({
   },
   modeBtnDisabled: {
     opacity: 0.5,
+  },
+  clearBtn: {
+    marginLeft: 'auto',
+    width: 32,
+    height: 32,
+    borderRadius: 14,
+    backgroundColor: '#e5e2f0',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   attachButton: {
     width: 44,
