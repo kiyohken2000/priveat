@@ -148,6 +148,20 @@ CREATE TABLE energy_log (
   source TEXT                -- 'ocr'|'healthkit'|'manual'
 );
 
+-- 「1日1値」表示時の優先順位ルール (2026-06-07 判断)
+--   weight_log : measured_at DESC (新しい順、source 無関係)
+--                ある瞬間の測定値が複数ソースから入る性質。
+--                ユーザーが手で補正したい意図 (例: スマート体重計の値で上書き) を尊重。
+--   energy_log : source 優先 (health > ocr > text > manual > その他)
+--                ソースごとに「データの単位」が違うため、選ばれた source 内の集約戦略も変える:
+--                  - health: 1日の累計値 (1日1行 upsert) → 最新1件を採用
+--                  - ocr   : フィットネス画面の累計値           → 最新1件を採用
+--                  - text  : 単発の運動 (例: ランニング30分=200kcal) → 同日全件 SUM
+--                  - manual: 単発の運動 (将来)                  → 同日全件 SUM
+--                health と text が混在する場合は health のみ採用 (Health は本来全運動を含むはず)。
+--                ヘルスケア未連携で text を朝/夜の 2 回入れたケースは text 全件 SUM で正しく合算される。
+--                実装ヘルパ: src/db/energyResolve.js (resolveDailyEnergy / resolveDailyEnergyRange)
+
 -- チャットメッセージ（Gifted Chat の IMessage を永続化）
 CREATE TABLE chat_messages (
   id TEXT PRIMARY KEY,

@@ -1,4 +1,5 @@
 import { getDb } from '../db'
+import { resolveDailyEnergy, resolveDailyEnergyRange } from '../db/energyResolve'
 import { getLatestWeight, getProfile } from '../db/profile'
 import { computeBmr } from '../utils/bmr'
 import { getStance } from './stance'
@@ -23,44 +24,38 @@ const get7dAverages = async (db) => {
         GROUP BY d
      )`,
   )
-  const activeRow = await db.getFirstAsync(
-    `SELECT AVG(active_kcal) AS avg FROM (
-       SELECT date(logged_at,'localtime') AS d, active_kcal
-         FROM energy_log e
-        WHERE date(logged_at,'localtime') >= date('now','localtime','-7 days')
-          AND e.id = (
-            SELECT id FROM energy_log e2
-            WHERE date(e2.logged_at,'localtime') = date(e.logged_at,'localtime')
-            ORDER BY CASE source WHEN 'health' THEN 1 WHEN 'ocr' THEN 2 ELSE 3 END
-            LIMIT 1
-          )
-     )`,
+  // energy は source 別戦略で resolve してから平均を取る
+  const todayRow = await db.getFirstAsync(
+    `SELECT date('now','localtime') AS today, date('now','localtime','-7 days') AS start`,
   )
+  const energyByDate = await resolveDailyEnergyRange(todayRow.start, todayRow.today)
+  const actives = [...energyByDate.values()]
+    .map((e) => e.active_kcal)
+    .filter((v) => v != null)
+  const avgActive = actives.length > 0
+    ? actives.reduce((a, b) => a + b, 0) / actives.length
+    : null
   return {
     avgIntake: intakeRow?.avg ?? null,
-    avgActive: activeRow?.avg ?? null,
+    avgActive,
   }
 }
 
 // 今日の値
 const getTodayValues = async (db) => {
   const today = dayKey(new Date())
-  const intakeRow = await db.getFirstAsync(
-    `SELECT COALESCE(SUM(kcal),0) AS total FROM food_log
-      WHERE date(eaten_at,'localtime') = ?`,
-    [today],
-  )
-  const energyRow = await db.getFirstAsync(
-    `SELECT active_kcal, steps FROM energy_log
-      WHERE date(logged_at,'localtime') = ?
-      ORDER BY CASE source WHEN 'health' THEN 1 WHEN 'ocr' THEN 2 ELSE 3 END
-      LIMIT 1`,
-    [today],
-  )
+  const [intakeRow, energy] = await Promise.all([
+    db.getFirstAsync(
+      `SELECT COALESCE(SUM(kcal),0) AS total FROM food_log
+        WHERE date(eaten_at,'localtime') = ?`,
+      [today],
+    ),
+    resolveDailyEnergy(today),
+  ])
   return {
     intake: intakeRow?.total ?? 0,
-    activeKcal: energyRow?.active_kcal ?? null,
-    steps: energyRow?.steps ?? null,
+    activeKcal: energy?.active_kcal ?? null,
+    steps: energy?.steps ?? null,
   }
 }
 

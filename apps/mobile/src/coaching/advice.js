@@ -1,6 +1,7 @@
 import { getDb } from '../db'
 import { getCachedAdvice, saveAdvice } from '../db/coachAdvice'
 import { getCachedWeeklyAdvice, saveWeeklyAdvice } from '../db/coachWeeklyAdvice'
+import { resolveDailyEnergy, resolveDailyEnergyRange } from '../db/energyResolve'
 import { getProfile, getLatestWeight } from '../db/profile'
 import { computeBmr } from '../utils/bmr'
 import { getStance } from './stance'
@@ -33,55 +34,51 @@ const formatDateLabel = (dateStr) => {
 // ---- データ取得 (date 指定) ------------------------------------------------
 
 const getDayValues = async (db, date) => {
-  const intakeRow = await db.getFirstAsync(
-    `SELECT COALESCE(SUM(kcal), 0) AS total
-       FROM food_log
-      WHERE date(eaten_at, 'localtime') = ?`,
-    [date],
-  )
-  const energyRow = await db.getFirstAsync(
-    `SELECT active_kcal, steps
-       FROM energy_log
-      WHERE date(logged_at, 'localtime') = ?
-      ORDER BY CASE source WHEN 'health' THEN 1 WHEN 'ocr' THEN 2 ELSE 3 END
-      LIMIT 1`,
-    [date],
-  )
+  const [intakeRow, energy] = await Promise.all([
+    db.getFirstAsync(
+      `SELECT COALESCE(SUM(kcal), 0) AS total
+         FROM food_log
+        WHERE date(eaten_at, 'localtime') = ?`,
+      [date],
+    ),
+    resolveDailyEnergy(date),
+  ])
   return {
     intake: intakeRow?.total ?? 0,
-    activeKcal: energyRow?.active_kcal ?? null,
-    steps: energyRow?.steps ?? null,
+    activeKcal: energy?.active_kcal ?? null,
+    steps: energy?.steps ?? null,
   }
 }
 
 // 該当日を末尾とする 7 日間の平均 (摂取・運動消費)。データ無い日は除外。
 const get7dAveragesUntil = async (db, date) => {
-  const intakeRow = await db.getFirstAsync(
-    `SELECT AVG(daily) AS avg FROM (
-       SELECT date(eaten_at,'localtime') AS d, SUM(kcal) AS daily
-         FROM food_log
-        WHERE date(eaten_at,'localtime') BETWEEN date(?, '-6 days') AND ?
-        GROUP BY d
-     )`,
-    [date, date],
+  // 7 日前 'YYYY-MM-DD' を SQLite に計算させる
+  const startRow = await db.getFirstAsync(
+    `SELECT date(?, '-6 days') AS start`,
+    [date],
   )
-  const activeRow = await db.getFirstAsync(
-    `SELECT AVG(active_kcal) AS avg FROM (
-       SELECT date(logged_at,'localtime') AS d, active_kcal
-         FROM energy_log e
-        WHERE date(logged_at,'localtime') BETWEEN date(?, '-6 days') AND ?
-          AND e.id = (
-            SELECT id FROM energy_log e2
-            WHERE date(e2.logged_at,'localtime') = date(e.logged_at,'localtime')
-            ORDER BY CASE source WHEN 'health' THEN 1 WHEN 'ocr' THEN 2 ELSE 3 END
-            LIMIT 1
-          )
-     )`,
-    [date, date],
-  )
+  const startDate = startRow?.start ?? date
+  const [intakeRow, energyByDate] = await Promise.all([
+    db.getFirstAsync(
+      `SELECT AVG(daily) AS avg FROM (
+         SELECT date(eaten_at,'localtime') AS d, SUM(kcal) AS daily
+           FROM food_log
+          WHERE date(eaten_at,'localtime') BETWEEN ? AND ?
+          GROUP BY d
+       )`,
+      [startDate, date],
+    ),
+    resolveDailyEnergyRange(startDate, date),
+  ])
+  const actives = [...energyByDate.values()]
+    .map((e) => e.active_kcal)
+    .filter((v) => v != null)
+  const avgActive = actives.length > 0
+    ? actives.reduce((a, b) => a + b, 0) / actives.length
+    : null
   return {
     avgIntake: intakeRow?.avg ?? null,
-    avgActive: activeRow?.avg ?? null,
+    avgActive,
   }
 }
 
@@ -290,44 +287,34 @@ const addDays = (dateStr, n) => {
 
 // weekStart 〜 weekStart+6 の 7 日間サマリー (合計・平均・記録日数)。
 const getWeekValues = async (db, weekStart, weekEnd) => {
-  const intakeRow = await db.getFirstAsync(
-    `SELECT COALESCE(SUM(daily), 0) AS total,
-            COUNT(*) AS days,
-            AVG(daily) AS avg
-       FROM (
-         SELECT date(eaten_at,'localtime') AS d, SUM(kcal) AS daily
-           FROM food_log
-          WHERE date(eaten_at,'localtime') BETWEEN ? AND ?
-          GROUP BY d
-       )`,
-    [weekStart, weekEnd],
-  )
-  const activeRow = await db.getFirstAsync(
-    `SELECT COALESCE(SUM(active_kcal), 0) AS total,
-            COUNT(*) AS days,
-            AVG(active_kcal) AS avg_active,
-            AVG(steps) AS avg_steps
-       FROM (
-         SELECT date(logged_at,'localtime') AS d, active_kcal, steps
-           FROM energy_log e
-          WHERE date(logged_at,'localtime') BETWEEN ? AND ?
-            AND e.id = (
-              SELECT id FROM energy_log e2
-              WHERE date(e2.logged_at,'localtime') = date(e.logged_at,'localtime')
-              ORDER BY CASE source WHEN 'health' THEN 1 WHEN 'ocr' THEN 2 ELSE 3 END
-              LIMIT 1
-            )
-       )`,
-    [weekStart, weekEnd],
-  )
+  const [intakeRow, energyByDate] = await Promise.all([
+    db.getFirstAsync(
+      `SELECT COALESCE(SUM(daily), 0) AS total,
+              COUNT(*) AS days,
+              AVG(daily) AS avg
+         FROM (
+           SELECT date(eaten_at,'localtime') AS d, SUM(kcal) AS daily
+             FROM food_log
+            WHERE date(eaten_at,'localtime') BETWEEN ? AND ?
+            GROUP BY d
+         )`,
+      [weekStart, weekEnd],
+    ),
+    resolveDailyEnergyRange(weekStart, weekEnd),
+  ])
+  const energies = [...energyByDate.values()]
+  const actives = energies.map((e) => e.active_kcal).filter((v) => v != null)
+  const stepsArr = energies.map((e) => e.steps).filter((v) => v != null)
+  const avg = (arr) => (arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : null)
+  const sum = (arr) => arr.reduce((a, b) => a + b, 0)
   return {
     intakeTotal: intakeRow?.total ?? 0,
     intakeAvg: intakeRow?.avg ?? null,
     intakeDays: intakeRow?.days ?? 0,
-    activeTotal: activeRow?.total ?? 0,
-    activeAvg: activeRow?.avg_active ?? null,
-    activeDays: activeRow?.days ?? 0,
-    stepsAvg: activeRow?.avg_steps ?? null,
+    activeTotal: sum(actives),
+    activeAvg: avg(actives),
+    activeDays: actives.length,
+    stepsAvg: avg(stepsArr),
   }
 }
 

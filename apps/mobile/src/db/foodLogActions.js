@@ -1,4 +1,5 @@
 import { getDb } from './index'
+import { resolveDailyEnergy } from './energyResolve'
 
 // 食事ログがあった日付一覧（カレンダーマーキング用）。'YYYY-MM-DD' の配列。
 export const getDatesWithFoodLog = async () => {
@@ -29,33 +30,28 @@ export const getFoodLogByDate = async (date) => {
 //   energy / weight は採用行の source と image_uri も返す（UI のソースバッジ用）。
 export const getDaySummary = async (date) => {
   const db = getDb()
-  const intakeRow = await db.getFirstAsync(
-    `SELECT COALESCE(SUM(kcal), 0) AS total
-       FROM food_log
-      WHERE date(eaten_at, 'localtime') = ?`,
-    [date],
-  )
-  const energyRow = await db.getFirstAsync(
-    `SELECT active_kcal, steps, source, image_uri
-       FROM energy_log
-      WHERE date(logged_at, 'localtime') = ?
-      ORDER BY CASE source WHEN 'health' THEN 1 WHEN 'ocr' THEN 2 ELSE 3 END
-      LIMIT 1`,
-    [date],
-  )
-  const weightRow = await db.getFirstAsync(
-    `SELECT weight_kg, measured_at, source, image_uri
-       FROM weight_log
-      WHERE date(measured_at, 'localtime') = ?
-      ORDER BY measured_at DESC LIMIT 1`,
-    [date],
-  )
+  const [intakeRow, energy, weightRow] = await Promise.all([
+    db.getFirstAsync(
+      `SELECT COALESCE(SUM(kcal), 0) AS total
+         FROM food_log
+        WHERE date(eaten_at, 'localtime') = ?`,
+      [date],
+    ),
+    resolveDailyEnergy(date),
+    db.getFirstAsync(
+      `SELECT weight_kg, measured_at, source, image_uri
+         FROM weight_log
+        WHERE date(measured_at, 'localtime') = ?
+        ORDER BY measured_at DESC LIMIT 1`,
+      [date],
+    ),
+  ])
   return {
     intake: intakeRow?.total ?? 0,
-    activeKcal: energyRow?.active_kcal ?? null,
-    steps: energyRow?.steps ?? null,
-    energySource: energyRow?.source ?? null,
-    energyImageUri: energyRow?.image_uri ?? null,
+    activeKcal: energy?.active_kcal ?? null,
+    steps: energy?.steps ?? null,
+    energySource: energy?.source ?? null,
+    energyImageUri: energy?.image_uri ?? null,
     weightKg: weightRow?.weight_kg ?? null,
     weightSource: weightRow?.source ?? null,
     weightImageUri: weightRow?.image_uri ?? null,
