@@ -1,16 +1,26 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { useLLM } from 'react-native-executorch'
-import { DEFAULT_MODEL_ID, LLM_MODELS, getModelById } from '../data/llmModels'
+import { DEFAULT_MODEL_ID, LLM_MODELS, getModelById as getExecutorchModelById } from '../data/llmModels'
 import { DEFAULT_VLM_MODEL_ID, VLM_MODELS } from '../data/llmModelsVlm'
+import { LLM_LLAMA_RN_TEXT_MODELS, getLlamaRnTextModelById } from '../data/llmTextModelsLlamaRn'
+import { useLlamaRnLLM } from './useLlamaRnLLM'
 
-// 「記録用 (parser)」「コーチ用 (coach)」で別々のモデルを使う設計 (executorch)。
+// 「記録用 (parser)」「コーチ用 (coach)」で別々のモデルを使う設計。
 //   - parser (記録用): 構造化出力。軽量モデルで十分（速度優先）
 //   - coach  (コーチ用): 自然言語応答。重めのモデルで品質を出す
-// 同時に常駐させると RAM 厳しいため、useLLM は 1 つだけ持ち、
-// currentRole に応じて parser/coach のモデルを差し替える（swap 方式）。
+// 各ロールに対して 2 つのエンジンが選べる:
+//   - executorch (useLLM): .pte 形式、 既定の経路 (Qwen3 / LFM2.5 多言語 / Qwen3.5)
+//   - llama.rn   (useLlamaRnLLM): GGUF 形式、 LFM2.5-1.2B-JP 等の日本語特化モデル
+// engine は model.id から導出する (両カタログを横断検索)。 ID は両カタログで一意。
+//
+// 同時常駐する RAM が厳しいので 1 つの role には 1 つだけロード。
+// 加えて非アクティブの engine の hook も常に呼びつつ preventLoad=true で解放、
+// React のフックルールを守りつつメモリ占有はゼロに保つ。
+//
 // 写真認識 (VLM) は llama.rn 経由で別エンジン管理 (vlmOrchestrator)。
-// executorch とは時間軸で排他制御し (preventLlmLoad)、同時並行ロードは避ける。
+// 時間軸で排他制御し (preventLlmLoad=true で executorch & llama.rn テキスト両方を解放)、
+// 同時並行ロードは避ける。
 
 const PARSER_KEY = '@priveat/active-parser-model-id'
 const COACH_KEY = '@priveat/active-coach-model-id'
@@ -26,8 +36,23 @@ const PENDING_LOAD_KEY = '@priveat/pending-model-load-v2'
 const DEFAULT_PARSER_MODEL_ID = 'qwen3-0.6b-q'
 const DEFAULT_COACH_MODEL_ID = 'qwen3-1.7b-q'
 
-const isValidId = (id) => id && LLM_MODELS.some((m) => m.id === id)
+// model.id は両カタログを跨いで一意の前提。
+const isValidId = (id) =>
+  !!id &&
+  (LLM_MODELS.some((m) => m.id === id) || LLM_LLAMA_RN_TEXT_MODELS.some((m) => m.id === id))
 const isValidVlmId = (id) => id && VLM_MODELS.some((m) => m.id === id)
+
+// engine 横断 lookup。 戻り値に engine フィールドを足して返す。
+// id が両カタログに見当たらない場合は executorch のデフォルト (qwen3-0.6b-q) にフォールバック。
+const getAnyModelById = (id) => {
+  const lr = getLlamaRnTextModelById(id)
+  if (lr) return { ...lr, engine: 'llama_rn' }
+  const ex = getExecutorchModelById(id)
+  return { ...ex, engine: 'executorch' }
+}
+
+const getEngineFor = (id) =>
+  LLM_LLAMA_RN_TEXT_MODELS.some((m) => m.id === id) ? 'llama_rn' : 'executorch'
 
 const ROLES = ['parser', 'coach']
 
@@ -44,13 +69,16 @@ const DEFAULT_BY_ROLE = {
 const ModelContext = createContext({
   parserModelId: DEFAULT_PARSER_MODEL_ID,
   coachModelId: DEFAULT_COACH_MODEL_ID,
-  parserModel: getModelById(DEFAULT_PARSER_MODEL_ID),
-  coachModel: getModelById(DEFAULT_COACH_MODEL_ID),
+  parserModel: getAnyModelById(DEFAULT_PARSER_MODEL_ID),
+  coachModel: getAnyModelById(DEFAULT_COACH_MODEL_ID),
+  parserEngine: 'executorch',
+  coachEngine: 'executorch',
   currentRole: 'parser',
   // activeModel / activeModelId は「いま LLMProvider がロードしようとしているモデル」。
   // currentRole に追従する。後方互換のため残す（既存コードが activeModel を参照していたため）。
   activeModelId: DEFAULT_PARSER_MODEL_ID,
-  activeModel: getModelById(DEFAULT_PARSER_MODEL_ID),
+  activeModel: getAnyModelById(DEFAULT_PARSER_MODEL_ID),
+  activeEngine: 'executorch',
   setParserModelId: () => {},
   setCoachModelId: () => {},
   setCurrentRole: () => {},
@@ -256,17 +284,23 @@ export const ModelProvider = ({ children }) => {
   }, [])
 
   const activeModelId = currentRole === 'coach' ? coachModelId : parserModelId
-  const activeModel = getModelById(activeModelId)
+  const activeModel = getAnyModelById(activeModelId)
+  const parserEngine = getEngineFor(parserModelId)
+  const coachEngine = getEngineFor(coachModelId)
+  const activeEngine = getEngineFor(activeModelId)
 
   const value = useMemo(
     () => ({
       parserModelId,
       coachModelId,
-      parserModel: getModelById(parserModelId),
-      coachModel: getModelById(coachModelId),
+      parserModel: getAnyModelById(parserModelId),
+      coachModel: getAnyModelById(coachModelId),
+      parserEngine,
+      coachEngine,
       currentRole,
       activeModelId,
       activeModel,
+      activeEngine,
       setParserModelId,
       setCoachModelId,
       setCurrentRole,
@@ -284,9 +318,12 @@ export const ModelProvider = ({ children }) => {
     [
       parserModelId,
       coachModelId,
+      parserEngine,
+      coachEngine,
       currentRole,
       activeModelId,
       activeModel,
+      activeEngine,
       setParserModelId,
       setCoachModelId,
       setCurrentRole,
@@ -310,18 +347,67 @@ export const ModelProvider = ({ children }) => {
   )
 }
 
-// LLMProvider は ModelProvider の内側で動く。activeModel.source が変わると
-// useLLM が新しいモデルで再初期化される（hot-swap / role swap 共通の経路）。
-//   - 起動時は parser モデルをロード
-//   - currentRole が 'coach' に変わると coach モデルへ swap
-//   - markLoaded は llm.isReady になったタイミングで Provider 側で自動呼び出し
-//   - llm インスタンスは LLMContext で配るので、購読していない画面は rerender されない
+// LLMProvider は ModelProvider の内側で動く。activeModel が変わると、
+// その engine 側のフックが新しいモデルで再初期化される（hot-swap / role swap 共通の経路）。
+//
+// 設計:
+//   - executorch hook (useLLM) と llama.rn hook (useLlamaRnLLM) を「両方常に呼ぶ」(React フックルール)
+//   - 「アクティブな engine」だけ preventLoad=false で実ロード
+//   - 「非アクティブな engine」は preventLoad=true → 各 hook が cleanup で解放
+//   - VLM 排他 (preventLlmLoad=true) 中は両方の hook を preventLoad=true にする
+//     (VLM 自体が llama.rn を別 context で動かしているため、 Metal Working Set を譲る)
+//
+// executorch hook は常に何かしらの model.source を要求する (preventLoad=true でも prop は必要)。
+// アクティブが llama.rn のときは「parser or coach のうち executorch 側のモデル」を渡し、
+// どちらも llama.rn なら DEFAULT_MODEL_ID (qwen3-0.6b-q) を placeholder として渡す。
+// preventLoad=true なので実 DL / ロードは走らない。
 const LLMProvider = ({ children }) => {
-  const { activeModel, markLoaded, preventLlmLoad } = useContext(ModelContext)
-  // preventLlmLoad=true の間は useLLM の useEffect が cleanup を走らせて
-  // controllerInstance.delete() で executorch をアンロード。これにより llama.rn
-  // が Metal Working Set を確保できる。false に戻すと自動で再ロードされる。
-  const llm = useLLM({ model: activeModel.source, preventLoad: preventLlmLoad })
+  const {
+    parserModel,
+    coachModel,
+    activeModel,
+    activeEngine,
+    markLoaded,
+    preventLlmLoad,
+  } = useContext(ModelContext)
+
+  // executorch hook 用の source を決定。
+  //   1. アクティブが executorch → activeModel.source
+  //   2. parser が executorch → parserModel.source (placeholder、 preventLoad=true で寝かせる)
+  //   3. coach が executorch → coachModel.source (同上)
+  //   4. どちらも llama.rn → DEFAULT_MODEL_ID の source (最終フォールバック)
+  let executorchSource
+  if (activeEngine === 'executorch') {
+    executorchSource = activeModel.source
+  } else if (parserModel.engine === 'executorch') {
+    executorchSource = parserModel.source
+  } else if (coachModel.engine === 'executorch') {
+    executorchSource = coachModel.source
+  } else {
+    executorchSource = getExecutorchModelById(DEFAULT_MODEL_ID).source
+  }
+
+  // llama.rn hook 用の model 定義 (catalog 行) を決定。
+  // ロジックは executorch と対称。 placeholder として LLM_LLAMA_RN_TEXT_MODELS[0] を使う。
+  let llamaRnModel = null
+  if (activeEngine === 'llama_rn') {
+    llamaRnModel = activeModel
+  } else if (parserModel.engine === 'llama_rn') {
+    llamaRnModel = parserModel
+  } else if (coachModel.engine === 'llama_rn') {
+    llamaRnModel = coachModel
+  } else {
+    // 両方 executorch のときは llama.rn 側に渡すモデルがない → null で hook を待機状態に
+    llamaRnModel = LLM_LLAMA_RN_TEXT_MODELS[0] ?? null
+  }
+
+  const executorchPreventLoad = preventLlmLoad || activeEngine !== 'executorch'
+  const llamaRnPreventLoad = preventLlmLoad || activeEngine !== 'llama_rn'
+
+  const executorchLLM = useLLM({ model: executorchSource, preventLoad: executorchPreventLoad })
+  const llamaRnLLM = useLlamaRnLLM({ model: llamaRnModel, preventLoad: llamaRnPreventLoad })
+
+  const llm = activeEngine === 'executorch' ? executorchLLM : llamaRnLLM
 
   useEffect(() => {
     if (llm.isReady) markLoaded()

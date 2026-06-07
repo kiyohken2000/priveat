@@ -11,6 +11,7 @@ import {
 } from 'react-native'
 import { colors, fontSize } from '../../theme'
 import { LLM_MODELS } from '../../data/llmModels'
+import { LLM_LLAMA_RN_TEXT_MODELS } from '../../data/llmTextModelsLlamaRn'
 import { useActiveLLM, useActiveModel } from '../../state/modelContext'
 import { canRunOnDevice, getDeviceRamBytes } from '../../utils/deviceRam'
 import {
@@ -24,12 +25,32 @@ import {
   downloadModel,
   listDownloadedModelIds,
 } from '../../services/modelStorage'
+import {
+  cancelLlamaRnTextModelDownload,
+  deleteLlamaRnTextModel,
+  downloadLlamaRnTextModel,
+  isLlamaRnTextModelDownloaded,
+} from '../../services/llmTextModelStorage'
 import VlmModelTab from './VlmModelTab'
 
 const formatSize = (mb) => {
   if (mb >= 1000) return `${(mb / 1000).toFixed(1)} GB`
   return `${mb} MB`
 }
+
+// engine 横断のサイズ取得。 executorch は approxSizeMb、 llama.rn は main.sizeBytes から導出。
+const getModelSizeMb = (m) => {
+  if (m.approxSizeMb != null) return m.approxSizeMb
+  if (m.main?.sizeBytes != null) return Math.round(m.main.sizeBytes / (1024 * 1024))
+  return 0
+}
+
+// engine 横断: executorch / llama.rn のカタログ行を 1 つの配列に結合 (parser/coach タブの並びを統一)。
+// 並び順は executorch 既存、続けて llama.rn (engine バッジで区別)。
+const ALL_TEXT_MODELS = [
+  ...LLM_MODELS.map((m) => ({ ...m, engine: 'executorch' })),
+  ...LLM_LLAMA_RN_TEXT_MODELS.map((m) => ({ ...m, engine: 'llama_rn' })),
+]
 
 const roleLabel = (role) =>
   role === 'coach' ? 'コーチ用'
@@ -119,13 +140,13 @@ export default function ModelScreen() {
   const targetModelId = selectedRole === 'coach' ? coachModelId : parserModelId
   const setTargetModelId = selectedRole === 'coach' ? setCoachModelId : setParserModelId
 
-  // parser/coach タブのみ executorch LLM_MODELS を出す。vision タブは別ロジック。
+  // parser/coach タブは executorch + llama.rn のテキストモデルを並列表示。vision タブは別ロジック。
   const visibleModels = useMemo(
-    () => (selectedRole === 'vision' ? [] : LLM_MODELS),
+    () => (selectedRole === 'vision' ? [] : ALL_TEXT_MODELS),
     [selectedRole],
   )
 
-  // どのモデルが DL 済みか（Set<string>）
+  // どのモデルが DL 済みか（Set<string>）— engine 横断で 1 つの Set
   const [downloadedIds, setDownloadedIds] = useState(new Set())
   // モデル ID → 進捗 (0..1)。進捗が入っているモデルは「ダウンロード中」とみなす
   const [progressMap, setProgressMap] = useState({})
@@ -135,8 +156,21 @@ export default function ModelScreen() {
   const refreshStatus = useCallback(async () => {
     try {
       setStatusLoading(true)
-      const ids = await listDownloadedModelIds(LLM_MODELS)
-      setDownloadedIds(new Set(ids))
+      // executorch 側は一括 API、 llama.rn 側はファイル存在チェックを 1 件ずつ
+      const [execIds, llamaResults] = await Promise.all([
+        listDownloadedModelIds(LLM_MODELS),
+        Promise.all(
+          LLM_LLAMA_RN_TEXT_MODELS.map(async (m) => ({
+            id: m.id,
+            exists: await isLlamaRnTextModelDownloaded(m),
+          })),
+        ),
+      ])
+      const all = new Set(execIds)
+      llamaResults.forEach((r) => {
+        if (r.exists) all.add(r.id)
+      })
+      setDownloadedIds(all)
     } catch (e) {
       console.warn('[modelScreen] refresh error:', e)
     } finally {
@@ -154,9 +188,12 @@ export default function ModelScreen() {
     if (progressMap[model.id] != null) return
     setProgressMap((p) => ({ ...p, [model.id]: 0 }))
     try {
-      await downloadModel(model, (p) => {
-        setProgressMap((prev) => ({ ...prev, [model.id]: p }))
-      })
+      const reportProgress = (p) => setProgressMap((prev) => ({ ...prev, [model.id]: p }))
+      if (model.engine === 'llama_rn') {
+        await downloadLlamaRnTextModel(model, reportProgress)
+      } else {
+        await downloadModel(model, reportProgress)
+      }
       await refreshStatus()
     } catch (err) {
       console.warn('[modelScreen] download error:', err)
@@ -171,7 +208,11 @@ export default function ModelScreen() {
   }
 
   const onCancelDownload = async (model) => {
-    await cancelDownload(model)
+    if (model.engine === 'llama_rn') {
+      await cancelLlamaRnTextModelDownload(model)
+    } else {
+      await cancelDownload(model)
+    }
     setProgressMap((prev) => {
       const next = { ...prev }
       delete next[model.id]
@@ -183,12 +224,13 @@ export default function ModelScreen() {
   // すでに同じロールに割り当てられている場合は何もしない（同一切替防止）。
   const onUse = (model) => {
     if (model.id === targetModelId) return
-    const isLarge = model.approxSizeMb >= 1000
+    const sizeMb = getModelSizeMb(model)
+    const isLarge = sizeMb >= 1000
     const proceed = () => setTargetModelId(model.id)
     if (isLarge) {
       Alert.alert(
         '大きいモデルです',
-        `${model.label} (${formatSize(model.approxSizeMb)}) を「${roleLabel(selectedRole)}」に設定します。\n\n端末のメモリが不足するとアプリがクラッシュする可能性があります。クラッシュした場合は次回起動時に自動でデフォルトモデルに戻ります。\n\n続行しますか？`,
+        `${model.label} (${formatSize(sizeMb)}) を「${roleLabel(selectedRole)}」に設定します。\n\n端末のメモリが不足するとアプリがクラッシュする可能性があります。クラッシュした場合は次回起動時に自動でデフォルトモデルに戻ります。\n\n続行しますか？`,
         [
           { text: 'キャンセル', style: 'cancel' },
           { text: '設定する', onPress: proceed },
@@ -223,7 +265,11 @@ export default function ModelScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              await deleteModel(model)
+              if (model.engine === 'llama_rn') {
+                await deleteLlamaRnTextModel(model)
+              } else {
+                await deleteModel(model)
+              }
               await refreshStatus()
             } catch (err) {
               console.warn('[modelScreen] delete error:', err)
@@ -311,6 +357,11 @@ export default function ModelScreen() {
             <View style={styles.cardHeader}>
               <View style={styles.cardTitleWrap}>
                 <Text style={styles.cardTitle}>{m.label}</Text>
+                {m.engine === 'llama_rn' && (
+                  <View style={styles.enginePill}>
+                    <Text style={styles.enginePillText}>llama.rn</Text>
+                  </View>
+                )}
                 {isRecommended && !isSelectedForRole && (
                   <View style={styles.recommendPill}>
                     <Text style={styles.recommendPillText}>★ 推奨</Text>
@@ -345,7 +396,7 @@ export default function ModelScreen() {
             </View>
             <Text style={styles.cardDesc}>{m.description}</Text>
             <Text style={styles.cardMeta}>
-              サイズ目安: {formatSize(m.approxSizeMb)}
+              サイズ目安: {formatSize(getModelSizeMb(m))}
               {isDownloaded ? '  ・  ✓ ダウンロード済み' : ''}
             </Text>
 
@@ -610,6 +661,20 @@ const styles = StyleSheet.create({
   recommendPillText: {
     fontSize: 10,
     color: '#7a5a00',
+    fontWeight: '700',
+  },
+  // engine バッジ (llama.rn のみ表示。 executorch は既定経路なのでバッジ無し)。
+  enginePill: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 8,
+    backgroundColor: '#e0eaff',
+    borderWidth: 1,
+    borderColor: '#7a9ee6',
+  },
+  enginePillText: {
+    fontSize: 10,
+    color: '#3155a3',
     fontWeight: '700',
   },
   badge: {
