@@ -255,12 +255,14 @@ export default function AdviceCard({ date, kind = 'today', period = 'day' }) {
       {showMascot ? (
         <View style={styles.speechRow}>
           <View style={styles.mascotWrap}>
-            <LottieView
-              source={mascotSource}
-              style={styles.mascot}
-              autoPlay
-              loop
-            />
+            <View style={styles.mascotClip}>
+              <LottieView
+                source={mascotSource}
+                style={styles.mascot}
+                autoPlay
+                loop
+              />
+            </View>
           </View>
           <View style={styles.bubbleWrap}>
             <View style={styles.bubbleTail} />
@@ -349,6 +351,18 @@ const styles = StyleSheet.create({
     width: 200,
     height: 200,
     alignSelf: 'center',
+    borderRadius: 16,
+    backgroundColor: colors.white,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 3,
+  },
+  mascotClip: {
+    flex: 1,
+    borderRadius: 16,
+    overflow: 'hidden',
   },
   mascot: {
     width: 200,
