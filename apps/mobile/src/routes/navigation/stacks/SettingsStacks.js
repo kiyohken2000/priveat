@@ -7,6 +7,7 @@ import ProfileScreen from '../../../scenes/settings/ProfileScreen'
 import ModelScreen from '../../../scenes/settings/ModelScreen'
 import HealthScreen from '../../../scenes/settings/HealthScreen'
 import StanceScreen from '../../../scenes/settings/StanceScreen'
+import BenchmarkScreen from '../../../scenes/settings/BenchmarkScreen'
 
 const Stack = createStackNavigator()
 
@@ -42,6 +43,11 @@ export const SettingsStacks = () => (
       name="StanceScreen"
       component={StanceScreen}
       options={{ title: 'コーチへの指示' }}
+    />
+    <Stack.Screen
+      name="BenchmarkScreen"
+      component={BenchmarkScreen}
+      options={{ title: 'モデル比較' }}
     />
   </Stack.Navigator>
 )

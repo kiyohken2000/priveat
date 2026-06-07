@@ -61,6 +61,13 @@ export default function SettingsHome() {
           />
           <View style={styles.divider} />
           <Row
+            icon="bar-chart"
+            title="モデル比較"
+            subtitle="同じ入力を複数モデルに投げて結果を比較"
+            onPress={() => navigation.navigate('BenchmarkScreen')}
+          />
+          <View style={styles.divider} />
+          <Row
             icon="heart"
             title="ヘルス連携"
             subtitle="HealthKit / Health Connect"

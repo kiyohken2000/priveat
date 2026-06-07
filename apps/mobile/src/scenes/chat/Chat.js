@@ -287,7 +287,7 @@ const FEW_SHOT_EXAMPLES = `以下の例を参考にしてください:
 入力: お腹すいた
 出力: {"kind":"unknown"}`
 
-const buildSystemPrompt = () =>
+export const buildSystemPrompt = () =>
   `${PARSER_SYSTEM_PROMPT}\n${getRecordSchemaPrompt()}\n${FEW_SHOT_EXAMPLES}\n/no_think`
 
 const makeDummyCardMessage = () => {
