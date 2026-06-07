@@ -1828,7 +1828,7 @@ export default function Chat() {
         minComposerHeight={48}
         renderMessage={renderWideMessage}
         renderBubble={renderBubble}
-        renderActions={renderActions}
+        renderActions={mode === 'coach' ? undefined : renderActions}
         renderAvatar={null}
         renderChatEmpty={renderChatEmpty}
         renderInputToolbar={(props) => (

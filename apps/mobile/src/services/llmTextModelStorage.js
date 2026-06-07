@@ -1,95 +1,85 @@
 // llama.rn 用テキスト LLM (GGUF) のローカル DL / 削除 / 進捗管理。
-// services/vlmModelStorage.js の単一ファイル版 (mmproj が無い)。
 //
-// 設計上の差異:
-//   - main GGUF のみで mmproj は無い → 進捗計算がシンプル (案分不要)
+// 設計:
+//   - main GGUF 単一ファイル (VLM の main+mmproj とは別)
 //   - 保存先は documentDirectory/llm-text/<modelId>/<filename>
-//   - VLM 経路と同じ理由で cacheDirectory ではなく documentDirectory を使う
-//     (iOS が領域不足時に勝手に消す可能性を避ける)
+//   - documentDirectory を使う理由: iOS が領域不足時に cacheDirectory を勝手に消す可能性を避ける
 //
-// 共有/分離の判断:
-//   - VLM と同じパターンなので共通基盤に抽出することも検討したが、
-//     vlmModelStorage は VLM 専用の比率計算 (main+mmproj) が組み込まれていて
-//     抽象化のメリットが薄い。 ベンチマーク用途で読みやすさ優先で別ファイルにした。
+// expo-file-system の API 選択:
+//   - legacy `createDownloadResumable` は大容量 (~800MB+) で downloadAsync の Promise が
+//     resolve しないバグ実例があった (NSURLSession の最終 move 完了が JS に通知されず、
+//     アプリリロードで初めてファイル出現が検出される)。
+//   - 新 File API (expo-file-system 53+) はネイティブ実装が刷新されており、 同問題が無い。
+//     v0.13 以降の dev 環境では legacy より新 API の方が安定。
 
-// eslint-disable-next-line import/no-unresolved
-import * as FileSystem from 'expo-file-system/legacy'
-
-const TEXT_LLM_DIR = `${FileSystem.documentDirectory}llm-text/`
+import { Directory, File, Paths } from 'expo-file-system'
 
 const filenameOf = (url) => url.split('/').pop()
 
-export const getLlamaRnTextModelPaths = (model) => {
-  const dir = `${TEXT_LLM_DIR}${model.id}/`
-  return {
-    dir,
-    mainPath: `${dir}${filenameOf(model.main.url)}`,
-  }
-}
+const getDirInstance = (model) => new Directory(Paths.document, 'llm-text', model.id)
+const getFileInstance = (model) => new File(getDirInstance(model), filenameOf(model.main.url))
 
-const ensureDir = async (dir) => {
-  const info = await FileSystem.getInfoAsync(dir)
-  if (!info.exists) {
-    await FileSystem.makeDirectoryAsync(dir, { intermediates: true })
+export const getLlamaRnTextModelPaths = (model) => {
+  const dirInst = getDirInstance(model)
+  const fileInst = getFileInstance(model)
+  return {
+    dir: dirInst.uri,
+    mainPath: fileInst.uri,
   }
 }
 
 export const isLlamaRnTextModelDownloaded = async (model) => {
-  const { mainPath } = getLlamaRnTextModelPaths(model)
-  const info = await FileSystem.getInfoAsync(mainPath)
-  return !!info.exists
+  const file = getFileInstance(model)
+  return !!file.exists
 }
 
-// アクティブな downloadResumable を modelId で覚えておく (cancel 用)。
+// アクティブな AbortController を modelId で覚えておく (cancel 用)。
 const activeDownloads = new Map()
 
 export const downloadLlamaRnTextModel = async (model, onProgress) => {
-  const { dir, mainPath } = getLlamaRnTextModelPaths(model)
-  await ensureDir(dir)
+  const dir = getDirInstance(model)
+  if (!dir.exists) dir.create({ intermediates: true })
 
-  const info = await FileSystem.getInfoAsync(mainPath)
-  if (info.exists) {
+  const file = getFileInstance(model)
+  if (file.exists) {
     if (typeof onProgress === 'function') onProgress(1)
     return
   }
 
-  const total = model.main.sizeBytes || 1
-  const dl = FileSystem.createDownloadResumable(
-    model.main.url,
-    mainPath,
-    {},
-    (state) => {
-      if (typeof onProgress !== 'function') return
-      const done = state?.totalBytesWritten ?? 0
-      onProgress(Math.min(1, done / total))
-    },
-  )
-  activeDownloads.set(model.id, dl)
+  const fallbackTotal = model.main.sizeBytes || 1
+  const controller = new AbortController()
+  activeDownloads.set(model.id, controller)
+
   try {
-    await dl.downloadAsync()
+    await File.downloadFileAsync(model.main.url, file, {
+      signal: controller.signal,
+      idempotent: true,
+      onProgress: ({ bytesWritten, totalBytes }) => {
+        if (typeof onProgress !== 'function') return
+        const expected = totalBytes > 0 ? totalBytes : fallbackTotal
+        onProgress(Math.min(1, (bytesWritten ?? 0) / expected))
+      },
+    })
     if (typeof onProgress === 'function') onProgress(1)
   } finally {
-    if (activeDownloads.get(model.id) === dl) {
+    if (activeDownloads.get(model.id) === controller) {
       activeDownloads.delete(model.id)
     }
   }
 }
 
 export const deleteLlamaRnTextModel = async (model) => {
-  const { dir } = getLlamaRnTextModelPaths(model)
-  const info = await FileSystem.getInfoAsync(dir)
-  if (info.exists) {
-    await FileSystem.deleteAsync(dir, { idempotent: true })
-  }
+  const dir = getDirInstance(model)
+  if (dir.exists) dir.delete({ idempotent: true })
 }
 
 export const cancelLlamaRnTextModelDownload = async (model) => {
-  const dl = activeDownloads.get(model.id)
-  if (!dl) return
+  const controller = activeDownloads.get(model.id)
+  if (!controller) return
   try {
-    await dl.pauseAsync()
+    controller.abort()
   } catch (e) {
-    // already paused / done — 無視
+    // already aborted — 無視
   }
   activeDownloads.delete(model.id)
 }
