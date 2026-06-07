@@ -6,6 +6,8 @@ import History from '../../../scenes/history/History'
 import CalendarScreen from '../../../scenes/history/CalendarScreen'
 import DayDetailScreen from '../../../scenes/history/DayDetailScreen'
 import EditFoodScreen from '../../../scenes/history/EditFoodScreen'
+import EditEnergyScreen from '../../../scenes/history/EditEnergyScreen'
+import EditWeightScreen from '../../../scenes/history/EditWeightScreen'
 
 const Stack = createStackNavigator()
 
@@ -50,6 +52,16 @@ export const HistoryStacks = () => (
       name="EditFoodScreen"
       component={EditFoodScreen}
       options={{ title: '食事を編集' }}
+    />
+    <Stack.Screen
+      name="EditEnergyScreen"
+      component={EditEnergyScreen}
+      options={{ title: '運動を編集' }}
+    />
+    <Stack.Screen
+      name="EditWeightScreen"
+      component={EditWeightScreen}
+      options={{ title: '体重を編集' }}
     />
   </Stack.Navigator>
 )

@@ -4,6 +4,8 @@ import { navigationProps } from './navigationProps/navigationProps'
 
 import Home from '../../../scenes/home/Home'
 import EditFoodScreen from '../../../scenes/history/EditFoodScreen'
+import EditEnergyScreen from '../../../scenes/history/EditEnergyScreen'
+import EditWeightScreen from '../../../scenes/history/EditWeightScreen'
 
 const Stack = createStackNavigator()
 
@@ -24,6 +26,16 @@ export const HomeStacks = () => (
       name="EditFoodScreen"
       component={EditFoodScreen}
       options={{ title: '食事を編集' }}
+    />
+    <Stack.Screen
+      name="EditEnergyScreen"
+      component={EditEnergyScreen}
+      options={{ title: '運動を編集' }}
+    />
+    <Stack.Screen
+      name="EditWeightScreen"
+      component={EditWeightScreen}
+      options={{ title: '体重を編集' }}
     />
   </Stack.Navigator>
 )
