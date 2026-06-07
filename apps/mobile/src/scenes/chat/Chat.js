@@ -40,6 +40,7 @@ import { getVlmModelById } from '../../data/llmModelsVlm'
 import { isVlmModelDownloaded } from '../../services/vlmModelStorage'
 import { runWithLlamaRn } from '../../state/vlmOrchestrator'
 import { detectAndParse } from './ocrParsers'
+import { estimateKcalBatch } from '../../utils/aiKcal'
 import { insertEnergyFromFitness, insertEnergyLog, insertProductFromLabel, insertWeightLog } from '../../db/ocrLogs'
 import { getLatestWeight } from '../../db/profile'
 import { DEFAULT_WEIGHT_KG, estimateActivityKcal } from '../../utils/mets'
@@ -118,6 +119,10 @@ const COACH_SUGGESTIONS = [
 
 // 料理写真認識用 (VLM / llama.rn 経路) のプロンプト。
 // 出力は「料理名のカンマ区切り」だけを期待。量/カロリーは別途 FoodCard で編集する。
+//
+// 注: VLM に kcal 推定まで負わせる試行 (#130 後続) は qwen3-vl-2b-q4 では幻覚/フォーマット崩れ/
+// 反復ループが頻発したため撤回。料理名抽出のみに専念させ、DB ミス品の kcal は EditFood の
+// 「AI推定」ボタン (テキスト LLM = Qwen3-0.6B) で補う運用とする。
 const VLM_SYSTEM_PROMPT = `あなたは料理写真を見て「料理名」だけを答えるアシスタントです。
 
 ルール:
@@ -413,6 +418,7 @@ export default function Chat() {
     activeModel,
     currentRole,
     setCurrentRole,
+    coachModel,
     fellBack,
     dismissFellBack,
     vlmEnabled,
@@ -435,8 +441,14 @@ export default function Chat() {
   }, [fellBack, dismissFellBack])
   const [localMessages, setLocalMessages] = useState([])
   const [llmCards, setLlmCards] = useState({}) // { historyIndex: { foodItems? | error? } }
+  // FoodCard 「AI推定」ボタン押下中のメッセージ ID。 1 つだけ active。
+  const [estimatingMessageId, setEstimatingMessageId] = useState(null)
+  // 「AI推定」中の段階 ('swapping' = coach モデルロード中 / 'generating' = 推論中)。
+  // FoodCard 側のラベル切替に使う。
+  const [estimatingPhase, setEstimatingPhase] = useState(null)
   // updateFoodItem / deleteFoodItem は非同期で findBestFood や DB UPDATE を挟むため、
   // 最新 state を closure 越しに見られるよう ref ミラーを用意する。
+  // (llmRef は下のブロックで既に用意されているのでここでは作らない)
   const localMessagesRef = useRef(localMessages)
   const llmCardsRef = useRef(llmCards)
   useEffect(() => {
@@ -600,10 +612,12 @@ export default function Chat() {
   // coach モードの Q&A を chat_messages テーブルに永続化。
   //   - 記録モードの会話は food_log が成果物として残るので保存しない。
   //   - DayDetail の「この日のコーチ対話」セクションで日付別に取り出して表示する。
+  //   - AI 応答が画面に出たタイミングでハプティック (parser 側と同様の体感)。
   useEffect(() => {
     if (llm.isGenerating) return
     if (mode !== 'coach') return
     const base = llm.messageHistory.filter((m) => m.role !== 'system')
+    let anyNew = false
     base.forEach((m, idx) => {
       if (m.role !== 'assistant') return
       if (persistedCoachRef.current.has(idx)) return
@@ -612,12 +626,16 @@ export default function Chat() {
       const cleanedAssistant = stripThink(m.content)
       if (!cleanedAssistant) return // <think> しか出てこなかった等は保存しない
       persistedCoachRef.current.add(idx)
+      anyNew = true
       insertCoachExchange({
         userText: userMsg.content,
         assistantText: cleanedAssistant,
         modelId: activeModel.id,
       }).catch((e) => console.warn('[chat] coach persist failed:', e?.message ?? e))
     })
+    if (anyNew) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+    }
   }, [llm.messageHistory, llm.isGenerating, mode, activeModel.id])
 
   const messages = useMemo(() => {
@@ -953,7 +971,8 @@ export default function Chat() {
               unit: it.unit,
               portion: 'normal',
               baseKcal: computedKcal,
-              // VLM 経路は今のところ estimated_kcal を出さないので、'db' or null のみ。
+              // VLM 経路は料理名のみで estimated_kcal を出さないので、'db' or null のみ。
+              // DB ミス品の kcal 推定が必要なら EditFood の「AI推定」ボタンで個別に行う。
               kcalSource: computedKcal != null ? 'db' : null,
               matchedName: matched?.name ?? null,
               matchedFoodCode: matched?.food_code ?? null,
@@ -1197,6 +1216,131 @@ export default function Chat() {
     [findFoodItemSnapshot, applyFoodItemPatch],
   )
 
+  // FoodCard 「AI推定」ボタンのハンドラ。
+  //   - そのカード内の baseKcal==null な item を全て集める
+  //   - parser (0.6B) では知識不足で精度低 (家系ラーメン → 370 kcal など) のため、
+  //     一時的に coach モデル (1.7B+) にスワップして推定。終わったら元のロールに戻す。
+  //   - 完了ごとに applyFoodItemPatch + updateFoodLogItem で UI と DB を更新
+  //   - kcalSource='llm_estimate' なので FoodCard 上で「(推定)」バッジが付く
+  const handleEstimateMissingKcal = useCallback(
+    async (messageId) => {
+      if (estimatingMessageId) return
+      if (!llm || !llm.isReady || llm.isGenerating) {
+        Alert.alert('AI モデルが準備中', '少し待ってから「AI推定」を押してください。')
+        return
+      }
+      // メッセージから対象 item を集める。
+      let foodItems = null
+      if (messageId.startsWith('local-card-') || messageId.startsWith('local-vlm-')) {
+        foodItems = localMessagesRef.current.find((m) => m._id === messageId)?.foodItems
+      } else if (messageId.startsWith('h-')) {
+        const idx = Number(messageId.slice(2))
+        foodItems = llmCardsRef.current[idx]?.foodItems
+      }
+      const targets = (foodItems ?? []).filter(
+        (it) => it.baseKcal == null && it.name?.trim(),
+      )
+      if (targets.length === 0) return
+
+      const originalRole = currentRole
+      const needSwap = originalRole !== 'coach'
+      setEstimatingMessageId(messageId)
+      setEstimatingPhase(needSwap ? 'swapping' : 'generating')
+
+      try {
+        // 1) coach に切替 (必要なら) → isReady を待つ。
+        //   注意: setCurrentRole の直後はまだ React 再 render が走っていないので、
+        //   llmRef.current は古い parser のままで isReady=true を返す → 即 break → unload 済みモデルに
+        //   generate して "model is currently not loaded" エラー、というレース条件がある。
+        //   なので 2 段階に分ける:
+        //     Phase 1: isReady が false に落ちる (= 新モデルのロードが始まった) のを待つ
+        //     Phase 2: isReady が true に戻る (= 新モデルが ready になった) のを待つ
+        //   Phase 1 が 5 秒タイムアウトしたら parser=coach 同モデル設定とみなしてそのまま進む。
+        if (needSwap) {
+          await setCurrentRole('coach')
+          const phase1Start = Date.now()
+          let swapStarted = false
+          while (Date.now() - phase1Start < 5_000) {
+            if (!llmRef.current?.isReady) {
+              swapStarted = true
+              break
+            }
+            await new Promise((resolve) => setTimeout(resolve, 50))
+          }
+          if (swapStarted) {
+            const phase2Start = Date.now()
+            while (Date.now() - phase2Start < 30_000) {
+              const cur = llmRef.current
+              if (cur?.isReady && !cur?.isGenerating) break
+              await new Promise((resolve) => setTimeout(resolve, 200))
+            }
+            if (!llmRef.current?.isReady) {
+              throw new Error('コーチモデルのロードがタイムアウトしました')
+            }
+          }
+          setEstimatingPhase('generating')
+        }
+
+        // coach に repetitionPenalty を効かせる。
+        //   - 1.7B は判断に迷うと同じ思考を 5 回以上繰り返して max_seq_len を食い潰す。
+        //     temperature を下げ、 repetitionPenalty で同一トークン列の再生成を抑止する。
+        //   - 副作用: configure は chatConfig も DEFAULT にリセットするが、推定終了後に parser へ
+        //     swap-back する際に Chat.js useEffect が再 configure するため log モードでは問題なし。
+        //   - estimateKcalBatch は generate(messages) を直接呼ぶので chatConfig.systemPrompt は不使用。
+        try {
+          llmRef.current?.configure({
+            generationConfig: { temperature: 0.1, repetitionPenalty: 1.1 },
+          })
+        } catch (e) {
+          console.warn('[ai kcal] configure (coach) failed:', e?.message ?? e)
+        }
+
+        // 2) 推定 (最新の llm を ref から取る)。
+        await estimateKcalBatch(
+          llmRef.current,
+          targets.map((it) => ({
+            id: it.id,
+            name: it.name,
+            quantity: it.quantity,
+            unit: it.unit,
+          })),
+          {
+            modelLabel: coachModel?.id ?? 'coach',
+            onItemDone: async (it, result) => {
+              if (!result.ok) return
+              const baseItem = (foodItems ?? []).find((x) => x.id === it.id)
+              const foodLogId = baseItem?.foodLogId ?? null
+              const patch = { baseKcal: result.kcal, kcalSource: 'llm_estimate' }
+              applyFoodItemPatch(messageId, it.id, patch)
+              if (foodLogId != null) {
+                try {
+                  await updateFoodLogItem(foodLogId, {
+                    baseKcal: result.kcal,
+                    kcalSource: 'llm_estimate',
+                  })
+                } catch (e) {
+                  console.warn('[food_log] estimate update failed:', e?.message ?? e)
+                }
+              }
+            },
+          },
+        )
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+      } catch (e) {
+        console.warn('[ai kcal batch] failed:', e?.message ?? e)
+        Alert.alert('AI推定に失敗', e?.message ?? String(e))
+      } finally {
+        // 3) 元のロールに戻す (必要なら)。 await はしない (戻りは backgrond で OK、 UI は解放)。
+        if (needSwap) {
+          setCurrentRole(originalRole).catch(() => {})
+        }
+        setEstimatingMessageId(null)
+        setEstimatingPhase(null)
+      }
+    },
+    [estimatingMessageId, llm, currentRole, setCurrentRole, applyFoodItemPatch],
+  )
+
   // FoodCard の行削除ハンドラ。ローカル state から除去し、保存済みなら food_log も DELETE。
   const deleteFoodItem = useCallback(
     async (messageId, itemId) => {
@@ -1369,6 +1513,9 @@ export default function Chat() {
             message={current}
             onUpdateItem={updateFoodItem}
             onDeleteItem={deleteFoodItem}
+            onEstimateMissing={handleEstimateMissingKcal}
+            estimating={estimatingMessageId === current._id}
+            estimatingPhase={estimatingMessageId === current._id ? estimatingPhase : null}
             title={current.isDummy ? '食品カード（ダミー）' : '抽出された食品'}
           />
         )
@@ -1387,7 +1534,17 @@ export default function Chat() {
       }
       return <Bubble {...props} renderMessageText={renderAssistantMarkdown} />
     },
-    [updateFoodItem, deleteFoodItem, handleLabelSave, handleWeightSave, handleActivitySave, handleUnknownOcrSave],
+    [
+      updateFoodItem,
+      deleteFoodItem,
+      handleEstimateMissingKcal,
+      estimatingMessageId,
+      estimatingPhase,
+      handleLabelSave,
+      handleWeightSave,
+      handleActivitySave,
+      handleUnknownOcrSave,
+    ],
   )
 
   const renderChatEmpty = useCallback(

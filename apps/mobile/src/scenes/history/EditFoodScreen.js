@@ -19,6 +19,7 @@ import { computeKcalFromMatch, findBestFood } from '../../db/search'
 import { portionFactor } from '../../db/foodLog'
 import FoodNameInput from '../../components/FoodNameInput'
 import { useActiveLLM, useActiveModel } from '../../state/modelContext'
+import { estimateKcalForFood } from '../../utils/aiKcal'
 
 const toNum = (v) => {
   if (v == null) return null
@@ -62,9 +63,15 @@ export default function EditFoodScreen() {
   const recomputeSeqRef = useRef(0)
   // AI 推定の進行中フラグと最後のエラー (UI ヒント用)
   const [aiBusy, setAiBusy] = useState(false)
+  const [aiPhase, setAiPhase] = useState(null) // 'swapping' | 'generating' | null
   const [aiError, setAiError] = useState(null)
   const llm = useActiveLLM()
-  const { activeModel } = useActiveModel()
+  const { activeModel, currentRole, setCurrentRole, coachModel } = useActiveModel()
+  // 非同期処理中に最新 llm を参照するための ref ミラー。
+  const llmRef = useRef(llm)
+  useEffect(() => {
+    llmRef.current = llm
+  }, [llm])
 
   const load = useCallback(async () => {
     try {
@@ -122,55 +129,73 @@ export default function EditFoodScreen() {
     return () => clearTimeout(handle)
   }, [loaded, name, quantity, unit, portion, kcalMode])
 
-  // 「AI 推定」ボタン: アクティブ LLM (= 通常は parser モデル) に常識的な kcal を1つ整数で
-  // 返してもらう。 DB ヒットしない料理 (ステーキ定食 / チェーン店メニュー など) の救済用。
+  // 「AI 推定」ボタン: parser モデル (0.6B) では知識不足で精度低 (家系ラーメン → 370 kcal) のため、
+  // 一時的に coach モデル (1.7B+) にスワップして推定。終わったら元のロールに戻す。
   const onPressAiEstimate = async () => {
-    setAiError(null)
     if (aiBusy) return
-    if (!name.trim() || !unit.trim()) {
-      setAiError('食品名と単位を入力してください')
-      return
-    }
+    setAiError(null)
     if (!llm || !llm.isReady || llm.isGenerating) {
-      setAiError('AI モデルがまだ準備中です。少し待ってからお試しください')
+      setAiError('AI モデルが準備中です。少し待ってから再度お試しください')
       return
     }
-    const qty = toNum(quantity) ?? 1
-    const prompt =
-      `「${name.trim()} ${qty}${unit.trim()}」の常識的なカロリーを、整数1つだけで答えてください。` +
-      `説明・単位・記号は不要。例: 250`
+    const originalRole = currentRole
+    const needSwap = originalRole !== 'coach'
     setAiBusy(true)
-    const messages = [
-      { role: 'system', content: '日本語で常識的なカロリーを1つの整数で返してください。' },
-      { role: 'user', content: prompt },
-    ]
-    console.log('========== AI kcal estimate ==========')
-    console.log('[model]', activeModel?.id ?? '(unknown)')
-    console.log('[messages]', JSON.stringify(messages, null, 2))
+    setAiPhase(needSwap ? 'swapping' : 'generating')
     try {
-      const raw = await llm.generate(messages)
-      console.log('[raw]', raw)
-      const cleaned = String(raw ?? '')
-        .replace(/<think>[\s\S]*?<\/think>/g, '')
-        .replace(/[^0-9]/g, ' ')
-      const match = cleaned.match(/\d+/)
-      const n = match ? parseInt(match[0], 10) : NaN
-      if (!Number.isFinite(n) || n <= 0 || n > 2000) {
-        console.log('[result] rejected (out of range or non-numeric)')
-        console.log('======================================')
-        setAiError(`AI から有効な値を取得できませんでした (応答: ${String(raw ?? '').slice(0, 40)}…)`)
-        return
+      if (needSwap) {
+        await setCurrentRole('coach')
+        // 2 段階待機: まず isReady が false に落ちる (= スワップ開始) のを待ち、
+        // 次に true に戻る (= 新モデル ready) のを待つ。 詳細は Chat.js 同等処理のコメント参照。
+        const phase1Start = Date.now()
+        let swapStarted = false
+        while (Date.now() - phase1Start < 5_000) {
+          if (!llmRef.current?.isReady) {
+            swapStarted = true
+            break
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+        if (swapStarted) {
+          const phase2Start = Date.now()
+          while (Date.now() - phase2Start < 30_000) {
+            const cur = llmRef.current
+            if (cur?.isReady && !cur?.isGenerating) break
+            await new Promise((resolve) => setTimeout(resolve, 200))
+          }
+          if (!llmRef.current?.isReady) {
+            setAiError('コーチモデルのロードがタイムアウトしました')
+            return
+          }
+        }
+        setAiPhase('generating')
       }
-      console.log('[result]', n, 'kcal')
-      console.log('======================================')
-      setKcal(String(n))
-      setKcalMode('llm_estimate')
-    } catch (err) {
-      console.warn('[ai kcal] generate failed:', err)
-      console.log('======================================')
-      setAiError(err?.message ?? String(err))
+      // coach に repetitionPenalty を効かせる (詳細は Chat.js 同等処理のコメント参照)。
+      try {
+        llmRef.current?.configure({
+          generationConfig: { temperature: 0.1, repetitionPenalty: 1.1 },
+        })
+      } catch (e) {
+        console.warn('[ai kcal] configure (coach) failed:', e?.message ?? e)
+      }
+      const r = await estimateKcalForFood(llmRef.current, {
+        name,
+        quantity: toNum(quantity) ?? 1,
+        unit,
+        modelLabel: coachModel?.id ?? 'coach',
+      })
+      if (r.ok) {
+        setKcal(String(r.kcal))
+        setKcalMode('llm_estimate')
+      } else {
+        setAiError(r.error)
+      }
     } finally {
+      if (needSwap) {
+        setCurrentRole(originalRole).catch(() => {})
+      }
       setAiBusy(false)
+      setAiPhase(null)
     }
   }
 
@@ -320,7 +345,12 @@ export default function EditFoodScreen() {
               ]}
             >
               {aiBusy ? (
-                <ActivityIndicator size="small" color={colors.white} />
+                <View style={styles.aiBtnBusyInner}>
+                  <ActivityIndicator size="small" color={colors.white} />
+                  <Text style={styles.aiBtnBusyText}>
+                    {aiPhase === 'swapping' ? '読み込み中' : '推定中'}
+                  </Text>
+                </View>
               ) : (
                 <Text
                   style={[
@@ -461,6 +491,8 @@ const styles = StyleSheet.create({
   recalcBtnText: { color: colors.white, fontSize: fontSize.small, fontWeight: '600' },
   recalcBtnTextDisabled: { color: colors.gray },
   aiBtn: { backgroundColor: colors.darkPurple },
+  aiBtnBusyInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
+  aiBtnBusyText: { color: colors.white, fontSize: fontSize.small, fontWeight: '600', marginLeft: 4 },
   dateButton: { justifyContent: 'center' },
   dateText: { fontSize: fontSize.middle, color: colors.darkPurple },
   saveBtn: {

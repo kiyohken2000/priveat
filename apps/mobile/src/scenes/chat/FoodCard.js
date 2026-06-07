@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import {
+  ActivityIndicator,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -119,7 +120,15 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
   )
 }
 
-export default function FoodCard({ message, onUpdateItem, onDeleteItem, title }) {
+export default function FoodCard({
+  message,
+  onUpdateItem,
+  onDeleteItem,
+  onEstimateMissing,
+  estimating,
+  estimatingPhase, // 'swapping' | 'generating' | null
+  title,
+}) {
   const items = message.foodItems ?? []
   const kcals = items.map(computeKcal)
   const hasUnknownKcal = kcals.some((k) => k == null)
@@ -166,6 +175,27 @@ export default function FoodCard({ message, onUpdateItem, onDeleteItem, title })
           {dailyTarget ? ` / ${dailyTarget} kcal` : ''}
         </Text>
       </View>
+      {hasUnknownKcal && onEstimateMissing ? (
+        <TouchableOpacity
+          style={[styles.estimateBtn, estimating && styles.estimateBtnBusy]}
+          onPress={() => onEstimateMissing(message._id)}
+          disabled={!!estimating}
+          activeOpacity={0.7}
+        >
+          {estimating ? (
+            <View style={styles.estimateBtnInner}>
+              <ActivityIndicator size="small" color={colors.white} />
+              <Text style={styles.estimateBtnTextBusy}>
+                {estimatingPhase === 'swapping'
+                  ? 'コーチモデル読み込み中…'
+                  : 'AI で推定中…'}
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.estimateBtnText}>「— kcal」の品目を AI で推定</Text>
+          )}
+        </TouchableOpacity>
+      ) : null}
       <Text style={styles.hint}>料理名タップで編集 / ピルで分量 / × で削除</Text>
     </View>
   )
@@ -293,5 +323,32 @@ const styles = StyleSheet.create({
     color: colors.darkPurple,
     fontWeight: '600',
     opacity: 0.85,
+  },
+  estimateBtn: {
+    marginTop: 8,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: colors.darkPurple,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  estimateBtnBusy: {
+    opacity: 0.7,
+  },
+  estimateBtnText: {
+    fontSize: fontSize.small,
+    color: colors.white,
+    fontWeight: '600',
+  },
+  estimateBtnInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  estimateBtnTextBusy: {
+    fontSize: fontSize.small,
+    color: colors.white,
+    fontWeight: '600',
+    marginLeft: 8,
   },
 })
