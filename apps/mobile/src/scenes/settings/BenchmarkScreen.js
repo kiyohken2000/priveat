@@ -229,6 +229,7 @@ export default function BenchmarkScreen() {
         return next
       })
     } catch (e) {
+      console.warn('[benchmark] delete error:', e)
       Alert.alert('削除失敗', e?.message ?? String(e))
     }
   }, [])

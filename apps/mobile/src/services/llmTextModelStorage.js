@@ -70,7 +70,7 @@ export const downloadLlamaRnTextModel = async (model, onProgress) => {
 
 export const deleteLlamaRnTextModel = async (model) => {
   const dir = getDirInstance(model)
-  if (dir.exists) dir.delete({ idempotent: true })
+  if (dir.exists) dir.delete()
 }
 
 export const cancelLlamaRnTextModelDownload = async (model) => {
