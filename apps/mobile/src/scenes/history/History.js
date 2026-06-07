@@ -13,6 +13,7 @@ import {
 import { BarChart, LineChart } from 'react-native-gifted-charts'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
 import ScreenTemplate from '../../components/ScreenTemplate'
+import AdviceCard from '../../components/AdviceCard'
 import { colors, fontSize } from '../../theme'
 import { getCalorieSeries, getDailyHistory, getWeightSeries } from '../../db/history'
 import { getLatestWeight, getProfile } from '../../db/profile'
@@ -38,6 +39,20 @@ const weekdayChar = (iso) => {
 
 const round = (n) => (n == null ? null : Math.round(n))
 
+const dayKey = (d) => {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${dd}`
+}
+
+// 「直近7日」アドバイス用の週始め (今日含む7日 → 6日前)。
+const todayWeekStart = () => {
+  const d = new Date()
+  d.setDate(d.getDate() - 6)
+  return dayKey(d)
+}
+
 export default function History() {
   const navigation = useNavigation()
   const [loaded, setLoaded] = useState(false)
@@ -46,6 +61,9 @@ export default function History() {
   const [calorieSeries, setCalorieSeries] = useState([])
   const [daily, setDaily] = useState([])
   const [bmr, setBmr] = useState(null)
+
+  // 「直近7日」週次アドバイスの起点 (今日含む 7 日間)。マウント時に固定。
+  const weekStart = useMemo(() => todayWeekStart(), [])
 
   const load = useCallback(async () => {
     try {
@@ -219,6 +237,9 @@ export default function History() {
                 <Text style={styles.placeholder}>記録がありません</Text>
               )}
             </View>
+
+            {/* 直近7日サマリーへの AI アドバイス */}
+            <AdviceCard date={weekStart} period="week" />
 
             {/* 日別リスト */}
             <View style={styles.card}>

@@ -169,6 +169,21 @@ export const MIGRATIONS = [
       ALTER TABLE food_log ADD COLUMN kcal_source TEXT;
     `,
   },
+  // v7: 週次サマリー用のアドバイスキャッシュ。日次の coach_advice と別建て。
+  //   week_start (YYYY-MM-DD) が PK。week_start から +6 日までの 7 日間が対象。
+  //   日次と同じく snapshot_hash で stale 判定する。
+  {
+    version: 7,
+    sql: `
+      CREATE TABLE IF NOT EXISTS coach_weekly_advice (
+        week_start TEXT PRIMARY KEY,
+        snapshot_hash TEXT,
+        advice_text TEXT NOT NULL,
+        model_id TEXT,
+        generated_at TEXT NOT NULL
+      );
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version

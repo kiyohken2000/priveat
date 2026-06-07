@@ -12,7 +12,12 @@ import { EnrichedMarkdownText } from 'react-native-enriched-markdown'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
 import { colors, fontSize } from '../theme'
 import { useActiveLLM, useActiveModel } from '../state/modelContext'
-import { generateAdvice, inspectAdvice } from '../coaching/advice'
+import {
+  generateAdvice,
+  generateWeeklyAdvice,
+  inspectAdvice,
+  inspectWeeklyAdvice,
+} from '../coaching/advice'
 import { pickMascotForDate } from '../coaching/mascot'
 
 // Today (Home) / 過去日 (DayDetail) 共通の AI アドバイス表示カード。
@@ -51,7 +56,10 @@ const formatGeneratedAt = (iso) => {
   }
 }
 
-export default function AdviceCard({ date, kind = 'today' }) {
+// period:
+//   - 'day'  : date を YYYY-MM-DD として 1 日アドバイス (coach_advice)
+//   - 'week' : date を週初め (YYYY-MM-DD) として直近 7 日サマリーアドバイス (coach_weekly_advice)
+export default function AdviceCard({ date, kind = 'today', period = 'day' }) {
   const llm = useActiveLLM()
   const {
     currentRole,
@@ -66,6 +74,8 @@ export default function AdviceCard({ date, kind = 'today' }) {
   const [loadingInspect, setLoadingInspect] = useState(true)
   const [phase, setPhase] = useState('idle') // 'idle' | 'awaiting-swap' | 'generating' | 'error'
   const [error, setError] = useState(null)
+
+  const isWeekly = period === 'week'
 
   // 日付ごとに同じマスコットが出るようにする (同じ日に何度開いても顔が変わらない)。
   const mascotSource = useMemo(() => pickMascotForDate(date), [date])
@@ -91,7 +101,9 @@ export default function AdviceCard({ date, kind = 'today' }) {
     if (!date) return
     setLoadingInspect(true)
     try {
-      const result = await inspectAdvice({ date, modelId: coachModelId })
+      const result = isWeekly
+        ? await inspectWeeklyAdvice({ weekStart: date, modelId: coachModelId })
+        : await inspectAdvice({ date, modelId: coachModelId })
       setCached(result.cached)
       setIsStale(result.isStale)
     } catch (e) {
@@ -99,7 +111,7 @@ export default function AdviceCard({ date, kind = 'today' }) {
     } finally {
       setLoadingInspect(false)
     }
-  }, [date, coachModelId])
+  }, [date, coachModelId, isWeekly])
 
   useEffect(() => {
     reloadInspect()
@@ -110,7 +122,11 @@ export default function AdviceCard({ date, kind = 'today' }) {
     setPhase('generating')
     setError(null)
     try {
-      await generateAdvice({ date, llm, modelId: coachModelId, kind })
+      if (isWeekly) {
+        await generateWeeklyAdvice({ weekStart: date, llm, modelId: coachModelId })
+      } else {
+        await generateAdvice({ date, llm, modelId: coachModelId, kind })
+      }
       await reloadInspect()
       setPhase('idle')
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
@@ -119,7 +135,7 @@ export default function AdviceCard({ date, kind = 'today' }) {
       setError(e?.message ?? String(e))
       setPhase('error')
     }
-  }, [date, llm, coachModelId, kind, reloadInspect])
+  }, [date, llm, coachModelId, kind, reloadInspect, isWeekly])
 
   // 「待機中: coach に切替→ ready 待ち」の遷移を監視。
   // requireSwap=true (実 swap が起きるケース) のときは「isReady=false を一度観測」する
@@ -226,7 +242,9 @@ export default function AdviceCard({ date, kind = 'today' }) {
     <View style={styles.card}>
       <View style={styles.headerRow}>
         <FontIcon name="lightbulb-o" size={16} color={colors.lightPurple} />
-        <Text style={styles.title}>AI からのアドバイス</Text>
+        <Text style={styles.title}>
+          {isWeekly ? '週次 AI アドバイス' : 'AI からのアドバイス'}
+        </Text>
         {isStale && showCached && (
           <View style={styles.staleBadge}>
             <Text style={styles.staleBadgeText}>データが更新されました</Text>
@@ -253,8 +271,9 @@ export default function AdviceCard({ date, kind = 'today' }) {
         </View>
       ) : (
         <Text style={styles.placeholder}>
-          ボタンを押すとコーチモデル ({coachModel?.label ?? '未選択'}) で
-          短いアドバイスを生成します。
+          {isWeekly
+            ? `ボタンを押すとコーチモデル (${coachModel?.label ?? '未選択'}) で直近 7 日のサマリーから来週へのヒントを生成します。`
+            : `ボタンを押すとコーチモデル (${coachModel?.label ?? '未選択'}) で短いアドバイスを生成します。`}
         </Text>
       )}
 
