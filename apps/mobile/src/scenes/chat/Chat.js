@@ -295,26 +295,26 @@ activity のルール:
 
 ユーザーへの返答はしない。JSONだけを返すこと。`
 
-// few-shot 例は最小限に絞る。 1B クラスの parser は long / detailed な例を
-// 短い入力でそのままコピペしてくる癖があるため、 「ごはん大盛りとバナナ1本と焼き魚」
-// のような多品目例は撤去。 代わりに「ユーザー入力をそのまま尊重する」ことを示す
-// 短い 1-2 品目の例だけ並べる。
-// 注意: 多品目 few-shot を追加して qwen3 の入れ子化を抑えようとしたが、 例を
-// 1 個増やすだけで qwen3-0.6b の executorch ビルドが "Failed to generate text"
-// で生成失敗するため断念 (複数行入力 / 1 行カンマ区切り両方で再現)。 qwen3 の
-// 入れ子バグは schema.js の flattenWrappedItems で 1 品目だけ救済する方針。
-const FEW_SHOT_EXAMPLES = `以下の例を参考にしてください:
-
-入力: 鶏むね200g
+// few-shot は engine ごとに分岐する。
+//   - executorch (qwen3-0.6b): プロンプトを少しでも長くすると "Failed to generate text"
+//     や 1 token で停止する症状が出る (2f63dbd / 多品目例追加検証で再現)。
+//     単品の food 例だけに絞った最小版を使う。 多品目入力は flattenWrappedItems に
+//     救済を委ねる (先頭 1 品目だけでも記録できる方が UX として良い)。
+//   - llama.rn (LFM2.5-1.2B-JP / Gemma3-1B): 単品例だけだと「と」連結の複数品目を
+//     欠落させがちなので、 短い 2 品目例を 1 件追加して学習させる。
+const FEW_SHOT_FOOD_SINGLE = `入力: 鶏むね200g
 出力: {"kind":"food","items":[{"name":"鶏むね","quantity":200,"unit":"g","estimated_kcal":230}]}
 
 入力: カレー一食
 出力: {"kind":"food","items":[{"name":"カレー","quantity":1,"unit":"食","estimated_kcal":600}]}
 
 入力: 無水カレー一食
-出力: {"kind":"food","items":[{"name":"無水カレー","quantity":1,"unit":"食","estimated_kcal":600}]}
+出力: {"kind":"food","items":[{"name":"無水カレー","quantity":1,"unit":"食","estimated_kcal":600}]}`
 
-入力: 体重68.5kg
+const FEW_SHOT_FOOD_MULTI = `入力: カツ丼と缶チューハイ2本
+出力: {"kind":"food","items":[{"name":"カツ丼","quantity":1,"unit":"杯","estimated_kcal":850},{"name":"缶チューハイ","quantity":2,"unit":"本","estimated_kcal":140}]}`
+
+const FEW_SHOT_TAIL = `入力: 体重68.5kg
 出力: {"kind":"weight","weight_kg":68.5}
 
 入力: 30分で3キロ走った
@@ -323,8 +323,17 @@ const FEW_SHOT_EXAMPLES = `以下の例を参考にしてください:
 入力: お腹すいた
 出力: {"kind":"unknown"}`
 
-export const buildSystemPrompt = () =>
-  `${PARSER_SYSTEM_PROMPT}\n${getRecordSchemaPrompt()}\n${FEW_SHOT_EXAMPLES}\n/no_think`
+const buildFewShot = (engine) => {
+  // engine が未指定なら安全側 (executorch 互換) に倒す。
+  const includeMulti = engine === 'llama_rn'
+  const foodBlock = includeMulti
+    ? `${FEW_SHOT_FOOD_SINGLE}\n\n${FEW_SHOT_FOOD_MULTI}`
+    : FEW_SHOT_FOOD_SINGLE
+  return `以下の例を参考にしてください:\n\n${foodBlock}\n\n${FEW_SHOT_TAIL}`
+}
+
+export const buildSystemPrompt = (engine) =>
+  `${PARSER_SYSTEM_PROMPT}\n${getRecordSchemaPrompt()}\n${buildFewShot(engine)}\n/no_think`
 
 // レシピモード専用 parser プロンプト。
 //   - kind は必ず "recipe" にする。 食事/体重/運動と判定したくなる入力でも recipe で返す。
@@ -654,6 +663,7 @@ export default function Chat() {
   const modelCtx = useActiveModel()
   const {
     activeModel,
+    activeEngine,
     currentRole,
     setCurrentRole,
     coachModel,
@@ -773,7 +783,7 @@ export default function Chat() {
           systemPrompt = buildRecipeSystemPrompt()
           temperature = 0.2
         } else {
-          systemPrompt = buildSystemPrompt()
+          systemPrompt = buildSystemPrompt(activeEngine)
           temperature = 0.2
         }
         llm.configure({
@@ -2036,7 +2046,7 @@ export default function Chat() {
                 systemPrompt = buildRecipeSystemPrompt()
                 temperature = 0.2
               } else {
-                systemPrompt = buildSystemPrompt()
+                systemPrompt = buildSystemPrompt(activeEngine)
                 temperature = 0.2
               }
               llm.configure({

@@ -370,6 +370,15 @@ export const parseRecordOutput = (rawOutput) => {
       case 'activity':
         return parseActivityKind(parsed)
       case 'unknown':
+        // LFM2.5 等が分類自信なしで kind=unknown を選びつつ items を埋めて
+        // 返してくるケースがある。 有効な品目が入っているなら food として救済。
+        if (Array.isArray(parsed.items) && parsed.items.length > 0) {
+          try {
+            return withTruncated(parseFoodKind(parsed))
+          } catch (e) {
+            // items が腐っていたら本来の unknown に落とす
+          }
+        }
         return { kind: 'unknown' }
       default:
         throw new Error(`未対応の kind: ${kind ?? '(なし)'}`)
