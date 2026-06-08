@@ -1,5 +1,5 @@
 import { useFocusEffect, useNavigation } from '@react-navigation/native'
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
   Image,
@@ -7,6 +7,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
@@ -32,10 +33,20 @@ const sourceLabel = (source) => {
   return source ?? '—'
 }
 
+const normalize = (s) => String(s ?? '').replace(/[\s\u3000]/g, '').toLowerCase()
+
+const SOURCE_FILTERS = [
+  { key: 'all', label: 'すべて' },
+  { key: 'manual', label: '手入力' },
+  { key: 'label_ocr', label: 'ラベル OCR' },
+]
+
 export default function ProductsScreen() {
   const navigation = useNavigation()
   const [loaded, setLoaded] = useState(false)
   const [products, setProducts] = useState([])
+  const [query, setQuery] = useState('')
+  const [sourceFilter, setSourceFilter] = useState('all')
 
   const load = useCallback(async () => {
     try {
@@ -54,6 +65,15 @@ export default function ProductsScreen() {
     }, [load]),
   )
 
+  const filtered = useMemo(() => {
+    const q = normalize(query)
+    return products.filter((p) => {
+      if (sourceFilter !== 'all' && p.source !== sourceFilter) return false
+      if (q && !normalize(p.name).includes(q)) return false
+      return true
+    })
+  }, [products, query, sourceFilter])
+
   const onAddNew = () => navigation.navigate('ProductEditScreen', {})
 
   if (!loaded) {
@@ -64,8 +84,11 @@ export default function ProductsScreen() {
     )
   }
 
+  const hasAnyProducts = products.length > 0
+  const isFilteringEmpty = hasAnyProducts && filtered.length === 0
+
   return (
-    <ScrollView contentContainerStyle={styles.root}>
+    <ScrollView contentContainerStyle={styles.root} keyboardShouldPersistTaps="handled">
       <Pressable
         onPress={onAddNew}
         style={({ pressed }) => [styles.addBtn, pressed && styles.btnPressed]}
@@ -73,7 +96,41 @@ export default function ProductsScreen() {
         <Text style={styles.addBtnText}>＋ 新しく登録</Text>
       </Pressable>
 
-      {products.length === 0 ? (
+      {hasAnyProducts ? (
+        <View style={styles.filterBox}>
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="名前で絞り込み"
+            placeholderTextColor={colors.gray}
+            style={styles.searchInput}
+            returnKeyType="search"
+            clearButtonMode="while-editing"
+          />
+          <View style={styles.chipsRow}>
+            {SOURCE_FILTERS.map((f) => {
+              const active = sourceFilter === f.key
+              return (
+                <Pressable
+                  key={f.key}
+                  onPress={() => setSourceFilter(f.key)}
+                  style={({ pressed }) => [
+                    styles.chip,
+                    active && styles.chipActive,
+                    pressed && styles.chipPressed,
+                  ]}
+                >
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                    {f.label}
+                  </Text>
+                </Pressable>
+              )
+            })}
+          </View>
+        </View>
+      ) : null}
+
+      {!hasAnyProducts && (
         <View style={styles.emptyBox}>
           <FontIcon name="cube" size={32} color={colors.gray} style={styles.emptyIcon} />
           <Text style={styles.emptyTitle}>登録済みのマイ食品はありません</Text>
@@ -82,9 +139,18 @@ export default function ProductsScreen() {
             「＋ 新しく登録」 から手入力できます
           </Text>
         </View>
-      ) : (
+      )}
+
+      {isFilteringEmpty && (
+        <View style={styles.emptyBox}>
+          <FontIcon name="search" size={28} color={colors.gray} style={styles.emptyIcon} />
+          <Text style={styles.emptyHint}>条件に一致するマイ食品はありません</Text>
+        </View>
+      )}
+
+      {hasAnyProducts && !isFilteringEmpty && (
         <View style={styles.section}>
-          {products.map((p, i) => (
+          {filtered.map((p, i) => (
             <React.Fragment key={p.id}>
               {i > 0 ? <View style={styles.divider} /> : null}
               <Pressable
@@ -146,6 +212,47 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   btnPressed: { opacity: 0.7 },
+  filterBox: {
+    marginBottom: 12,
+  },
+  searchInput: {
+    backgroundColor: colors.white,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: fontSize.middle,
+    color: colors.darkPurple,
+    borderWidth: 1,
+    borderColor: '#e8e6f1',
+  },
+  chipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 8,
+  },
+  chip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#e0dcf0',
+    backgroundColor: colors.white,
+    marginRight: 8,
+    marginBottom: 4,
+  },
+  chipActive: {
+    backgroundColor: colors.lightPurple,
+    borderColor: colors.lightPurple,
+  },
+  chipPressed: { opacity: 0.7 },
+  chipText: {
+    fontSize: fontSize.small,
+    color: colors.gray,
+    fontWeight: '600',
+  },
+  chipTextActive: {
+    color: colors.white,
+  },
   emptyBox: {
     alignItems: 'center',
     padding: 32,

@@ -1,11 +1,12 @@
 import { useFocusEffect, useNavigation } from '@react-navigation/native'
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
@@ -25,10 +26,13 @@ const formatCreated = (iso) => {
   }
 }
 
+const normalize = (s) => String(s ?? '').replace(/[\s\u3000]/g, '').toLowerCase()
+
 export default function RecipesScreen() {
   const navigation = useNavigation()
   const [loaded, setLoaded] = useState(false)
   const [recipes, setRecipes] = useState([])
+  const [query, setQuery] = useState('')
 
   const load = useCallback(async () => {
     try {
@@ -47,6 +51,12 @@ export default function RecipesScreen() {
       load()
     }, [load]),
   )
+
+  const filtered = useMemo(() => {
+    const q = normalize(query)
+    if (!q) return recipes
+    return recipes.filter((r) => normalize(r.name).includes(q))
+  }, [recipes, query])
 
   if (!loaded) {
     return (
@@ -69,32 +79,49 @@ export default function RecipesScreen() {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.root}>
-      <View style={styles.section}>
-        {recipes.map((r, i) => (
-          <React.Fragment key={r.id}>
-            {i > 0 ? <View style={styles.divider} /> : null}
-            <Pressable
-              onPress={() => navigation.navigate('RecipeEditScreen', { id: r.id })}
-              style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-            >
-              <View style={styles.rowMain}>
-                <Text style={styles.name}>{r.name}</Text>
-                <Text style={styles.meta}>
-                  {r.kcal_per_serving != null
-                    ? `${r.kcal_per_serving} kcal / 食`
-                    : '— kcal / 食'}
-                  {' · '}
-                  {r.servings} 食分
-                  {' · '}
-                  {formatCreated(r.created_at)}
-                </Text>
-              </View>
-              <FontIcon name="chevron-right" size={14} color={colors.gray} />
-            </Pressable>
-          </React.Fragment>
-        ))}
-      </View>
+    <ScrollView contentContainerStyle={styles.root} keyboardShouldPersistTaps="handled">
+      <TextInput
+        value={query}
+        onChangeText={setQuery}
+        placeholder="名前で絞り込み"
+        placeholderTextColor={colors.gray}
+        style={styles.searchInput}
+        returnKeyType="search"
+        clearButtonMode="while-editing"
+      />
+
+      {filtered.length === 0 ? (
+        <View style={styles.emptyBox}>
+          <FontIcon name="search" size={28} color={colors.gray} style={styles.emptyIcon} />
+          <Text style={styles.emptyHint}>条件に一致するレシピはありません</Text>
+        </View>
+      ) : (
+        <View style={styles.section}>
+          {filtered.map((r, i) => (
+            <React.Fragment key={r.id}>
+              {i > 0 ? <View style={styles.divider} /> : null}
+              <Pressable
+                onPress={() => navigation.navigate('RecipeEditScreen', { id: r.id })}
+                style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+              >
+                <View style={styles.rowMain}>
+                  <Text style={styles.name}>{r.name}</Text>
+                  <Text style={styles.meta}>
+                    {r.kcal_per_serving != null
+                      ? `${r.kcal_per_serving} kcal / 食`
+                      : '— kcal / 食'}
+                    {' · '}
+                    {r.servings} 食分
+                    {' · '}
+                    {formatCreated(r.created_at)}
+                  </Text>
+                </View>
+                <FontIcon name="chevron-right" size={14} color={colors.gray} />
+              </Pressable>
+            </React.Fragment>
+          ))}
+        </View>
+      )}
     </ScrollView>
   )
 }
@@ -107,6 +134,21 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: colors.lightGrayPurple,
     padding: 20,
+  },
+  searchInput: {
+    backgroundColor: colors.white,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: fontSize.middle,
+    color: colors.darkPurple,
+    borderWidth: 1,
+    borderColor: '#e8e6f1',
+    marginBottom: 12,
+  },
+  emptyBox: {
+    alignItems: 'center',
+    padding: 32,
   },
   emptyIcon: { marginBottom: 12, opacity: 0.5 },
   emptyTitle: {
