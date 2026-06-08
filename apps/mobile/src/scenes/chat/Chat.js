@@ -299,6 +299,10 @@ activity のルール:
 // 短い入力でそのままコピペしてくる癖があるため、 「ごはん大盛りとバナナ1本と焼き魚」
 // のような多品目例は撤去。 代わりに「ユーザー入力をそのまま尊重する」ことを示す
 // 短い 1-2 品目の例だけ並べる。
+// 注意: 多品目 few-shot を追加して qwen3 の入れ子化を抑えようとしたが、 例を
+// 1 個増やすだけで qwen3-0.6b の executorch ビルドが "Failed to generate text"
+// で生成失敗するため断念 (複数行入力 / 1 行カンマ区切り両方で再現)。 qwen3 の
+// 入れ子バグは schema.js の flattenWrappedItems で 1 品目だけ救済する方針。
 const FEW_SHOT_EXAMPLES = `以下の例を参考にしてください:
 
 入力: 鶏むね200g
@@ -497,7 +501,14 @@ const parseAndDispatch = async (content, idx, mode = 'log', userText = '') => {
   try {
     parsed = parseRecordOutput(content)
   } catch (e) {
-    return { error: e?.message ?? String(e) }
+    return {
+      error: e?.message ?? String(e),
+      stages: {
+        extracted: e?.extracted,
+        repaired: e?.repaired,
+        parsed: e?.parsed,
+      },
+    }
   }
   // レシピモードでは recipe 以外を受け付けない。 parser が誤って food などを
   // 返してきた場合は強制的にエラー扱いにし、 RecipeCard が誤生成されないようにする。
@@ -846,9 +857,14 @@ export default function Chat() {
         const userMsg = base[idx - 1]?.content
         console.log('========== Chat log ==========')
         console.log('[model]', activeModel.id)
+        console.log('[engine]', activeModel.engine ?? 'unknown')
+        console.log('[mode]', mode)
         if (userMsg) console.log('[USER]', userMsg)
         console.log('[LLM raw]', m.content)
         const result = await parseAndDispatch(m.content, idx, mode, userMsg ?? '')
+        if (result.truncated) {
+          console.log('[truncated] LLM 出力が生成上限で途中で切れた可能性あり')
+        }
         if (result.kind === 'food' && result.foodItems) {
           console.log('[parsed+enriched]', JSON.stringify(result.foodItems, null, 2))
           try {
@@ -880,6 +896,15 @@ export default function Chat() {
           console.log('[parsed unknown] 食事/体重/運動いずれでもない')
         } else {
           console.log('[parse error]', result.error)
+          if (result.stages?.extracted !== undefined) {
+            console.log('[extracted]', result.stages.extracted)
+          }
+          if (result.stages?.repaired !== undefined) {
+            console.log('[repaired]', result.stages.repaired)
+          }
+          if (result.stages?.parsed !== undefined) {
+            console.log('[parsed obj]', JSON.stringify(result.stages.parsed, null, 2))
+          }
         }
         console.log('==============================')
         setLlmCards((prev) => ({ ...prev, [idx]: result }))

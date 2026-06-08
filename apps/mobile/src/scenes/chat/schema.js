@@ -76,7 +76,24 @@ const extractBetweenBrackets = (text) => {
   if (startIdx < 0) throw new Error('JSON が見つかりません')
   const opening = text[startIdx]
   const closing = opening === '{' ? '}' : ']'
-  return text.slice(text.indexOf(opening), text.lastIndexOf(closing) + 1)
+  const start = text.indexOf(opening)
+  const end = text.lastIndexOf(closing)
+  // 閉じブラケットが無い (LLM が生成上限で途中で切れた) ケースは
+  // 末尾までを返して後段の jsonrepair に救済を任せる。 末尾品目が
+  // 落ちる可能性はあるが、 先頭品目だけでも記録できる方が体験として良い。
+  if (end < start) return text.slice(start)
+  return text.slice(start, end + 1)
+}
+
+// 末尾判定 / 括弧バランス判定のノイズになる markdown コードフェンスを除去。
+//   - ```json\n...\n``` / ```\n...\n``` / 末端だけ ``` などのパターン
+//   - 多くの LLM が JSON を ```json ... ``` で囲って返してくるため、 これを
+//     除去しないと正常出力でも末尾が ``` になり truncated 誤判定になる。
+const stripCodeFences = (text) => {
+  let s = String(text ?? '').trim()
+  s = s.replace(/^```[a-zA-Z]*[ \t]*\r?\n?/, '')
+  s = s.replace(/\r?\n?[ \t]*```[ \t]*$/, '')
+  return s.trim()
 }
 
 // LLM 出力が生成上限などで途中で切れているかを推定する。
@@ -90,15 +107,18 @@ const detectTruncated = (rawOutput) => {
   // <think> ブロックは末尾判定のノイズになるので外す
   const noThink = trimmed.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
   if (!noThink) return false
-  const last = noThink[noThink.length - 1]
+  // markdown コードフェンスも外す (```json ... ``` で囲って返すモデルが多い)
+  const noFence = stripCodeFences(noThink)
+  if (!noFence) return false
+  const last = noFence[noFence.length - 1]
   if (last !== '}' && last !== ']') return true
   // 括弧バランス (文字列リテラル中は無視)
   let inStr = false
   let escape = false
   let braces = 0
   let brackets = 0
-  for (let i = 0; i < noThink.length; i += 1) {
-    const c = noThink[i]
+  for (let i = 0; i < noFence.length; i += 1) {
+    const c = noFence[i]
     if (escape) {
       escape = false
       continue
@@ -169,11 +189,25 @@ const coerceNumber = (raw) => {
   return null
 }
 
+// qwen3-0.6b 等の小型モデルが items 配列の中にもう一段 {kind:'food', items:[...]}
+// を入れ子で返してくるケースの救済。 「name を持たず items 配列を持つ要素」 を
+// ラッパーと見なして中身を展開する。 正常な item は name を持つので影響なし。
+const flattenWrappedItems = (arr, depth = 0) => {
+  if (depth > 3) return arr
+  return arr.flatMap((it) => {
+    if (it && typeof it === 'object' && !it.name && Array.isArray(it.items)) {
+      return flattenWrappedItems(it.items, depth + 1)
+    }
+    return [it]
+  })
+}
+
 const parseFoodKind = (parsed) => {
-  const itemsArray = Array.isArray(parsed) ? parsed : parsed?.items
-  if (!Array.isArray(itemsArray)) {
+  const rawItemsArray = Array.isArray(parsed) ? parsed : parsed?.items
+  if (!Array.isArray(rawItemsArray)) {
     throw new Error('items 配列が見つかりません')
   }
+  const itemsArray = flattenWrappedItems(rawItemsArray)
   const items = itemsArray
     .map((it) => {
       if (!it || typeof it !== 'object') return null
@@ -268,45 +302,80 @@ const parseActivityKind = (parsed) => {
   }
 }
 
+// 失敗時にどのステージで詰まったか分かるよう、中間結果を Error に貼っておく。
+//   - parseAndDispatch 側でログに [extracted] / [repaired] として出して
+//     LLM 出力のどこで JSON が壊れているか切り分けできるようにする。
+const attachStages = (err, stages) => {
+  if (err && typeof err === 'object') {
+    const patch = {}
+    if (stages.extracted !== undefined) patch.extracted = stages.extracted
+    if (stages.repaired !== undefined) patch.repaired = stages.repaired
+    if (stages.parsed !== undefined) patch.parsed = stages.parsed
+    Object.assign(err, patch)
+  }
+  return err
+}
+
 // kind ごとに適切なフィールドを取り出して discriminated union を返す。
 // モデルが {"items":[...]} だけを返した（kind が欠落した）場合は food として扱う互換挙動。
 // 出力が生成上限で切れていそうなら結果に truncated=true を載せる。
 export const parseRecordOutput = (rawOutput) => {
   const truncated = detectTruncated(rawOutput)
-  const extracted = extractBetweenBrackets(rawOutput)
-  const repaired = jsonrepair(extracted)
-  const parsed = JSON.parse(repaired)
+  let extracted
+  try {
+    extracted = extractBetweenBrackets(rawOutput)
+  } catch (e) {
+    throw attachStages(e, {})
+  }
+  let repaired
+  try {
+    repaired = jsonrepair(extracted)
+  } catch (e) {
+    throw attachStages(e, { extracted })
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(repaired)
+  } catch (e) {
+    throw attachStages(e, { extracted, repaired })
+  }
 
   const withTruncated = (result) =>
     truncated ? { ...result, truncated: true } : result
 
-  if (Array.isArray(parsed)) {
-    return withTruncated(parseFoodKind({ items: parsed }))
-  }
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('JSON が見つかりません')
-  }
+  // kind 判定以降で投げられる Error にも extracted/repaired/parsed を貼って
+  // 「JSON は通ったが kind 判定 / フィールド抽出で落ちた」ケースを切り分け可能にする。
+  try {
+    if (Array.isArray(parsed)) {
+      return withTruncated(parseFoodKind({ items: parsed }))
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error('JSON が見つかりません')
+    }
 
-  const kind = typeof parsed.kind === 'string' ? parsed.kind : null
+    const kind = typeof parsed.kind === 'string' ? parsed.kind : null
 
-  // 旧形式 ({"items":[...]} だけ) は食事として受け入れる
-  if (!kind && Array.isArray(parsed.items)) {
-    return withTruncated(parseFoodKind(parsed))
-  }
-
-  switch (kind) {
-    case 'food':
+    // 旧形式 ({"items":[...]} だけ) は食事として受け入れる
+    if (!kind && Array.isArray(parsed.items)) {
       return withTruncated(parseFoodKind(parsed))
-    case 'recipe':
-      return withTruncated(parseRecipeKind(parsed))
-    case 'weight':
-      return parseWeightKind(parsed)
-    case 'activity':
-      return parseActivityKind(parsed)
-    case 'unknown':
-      return { kind: 'unknown' }
-    default:
-      throw new Error(`未対応の kind: ${kind ?? '(なし)'}`)
+    }
+
+    switch (kind) {
+      case 'food':
+        return withTruncated(parseFoodKind(parsed))
+      case 'recipe':
+        return withTruncated(parseRecipeKind(parsed))
+      case 'weight':
+        return parseWeightKind(parsed)
+      case 'activity':
+        return parseActivityKind(parsed)
+      case 'unknown':
+        return { kind: 'unknown' }
+      default:
+        throw new Error(`未対応の kind: ${kind ?? '(なし)'}`)
+    }
+  } catch (e) {
+    throw attachStages(e, { extracted, repaired, parsed })
   }
 }
 
