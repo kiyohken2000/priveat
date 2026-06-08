@@ -1,9 +1,6 @@
 /* eslint-disable no-console */
 // カロリーSlism (https://calorie.slism.jp) スクレイパー。
 //
-// **個人利用専用** — public repo には scrape 結果を含めない (.gitignore 配下に出力)。
-// Slism 規約: 引用要件 + 出典表記。個人利用 = 私的複製 (著 30 条) の範囲で利用。
-//
 // 戦略:
 //   sitemap.xml → URL リスト → 各 URL の HTML を rate-limited で fetch → raw HTML 保存
 //   parser (build-slism-foods.js) で raw HTML → foods_slism.json 化

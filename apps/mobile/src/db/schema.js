@@ -139,7 +139,7 @@ export const MIGRATIONS = [
     `,
   },
   // v5: 食品データソースの多重化 (八訂 + Slism)。
-  //   - source TEXT: 'mext' (八訂) / 'slism' (個人利用範囲のみ)
+  //   - source TEXT: 'mext' (八訂) / 'slism'
   //   - alt_name TEXT: 別名 (Slism は alternateName で持っている)
   //   - fiber_per_100g REAL: 食物繊維 (Slism は持っている)
   //   - serving_size_g REAL / kcal_per_serving REAL: Slism の 1 食分参考値

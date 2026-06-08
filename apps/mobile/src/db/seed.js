@@ -3,7 +3,7 @@ import foodsSlismData from '../../assets/data/foods_slism.json'
 
 // foods テーブルに 2 ソース (mext = 八訂、slism = カロリーSlism) を seed する。
 // source ごとに件数判定し、まだ入っていない方だけバルクインサートする。
-// foods_slism.json は public repo には含まれない (個人利用範囲、.gitignore 配下) ので、
+// foods_slism.json は public repo には含まれないので、
 // スタブ (count=0) のときは Slism seed をスキップする。
 //
 // 起動時に呼ばれる。トランザクション内 + prepared statement で数千件を数秒で投入。
