@@ -15,14 +15,11 @@ import { colors, fontSize } from '../../theme'
 import { LLM_MODELS } from '../../data/llmModels'
 import { LLM_LLAMA_RN_TEXT_MODELS } from '../../data/llmTextModelsLlamaRn'
 import { useActiveLLM, useActiveModel } from '../../state/modelContext'
-import { parseRecordOutput } from '../chat/schema'
+import { parseRecordOutput, parseStage2Output } from '../chat/schema'
 import {
   buildSystemPrompt as buildParserSystemPrompt,
-  buildStage2FoodPrompt,
-  buildStage2WeightPrompt,
-  buildStage2ActivityPrompt,
-  buildRecipeSystemPrompt,
   classifyByRules,
+  getStage2PromptFor,
 } from '../chat/Chat'
 import { buildCoachSystemPrompt } from '../../coaching/prompts'
 import { buildCoachingContext } from '../../coaching/context'
@@ -81,36 +78,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const isLlamaRn = (m) => m.engine === 'llama_rn'
 
-// stage2 出力に kind を補って parseRecordOutput に渡す。
-// stage2 プロンプトは kind フィールドを出力しない (ルール分類器で確定済みなので
-// 冗長 + qwen3 の入れ子バグ回避) ので、 ここで補う。
-// food だけは例外で、 parseRecordOutput が kind 無し + items 配列なら food として
-// 扱う互換挙動を持つので何もしない。
-const parseStage2Output = (rawOutput, kind) => {
-  if (kind === 'unknown') return { kind: 'unknown' }
-  if (kind === 'food') return parseRecordOutput(rawOutput)
-  if (!rawOutput) throw new Error('stage2 出力が空です')
-
-  const cleaned = String(rawOutput)
-    .replace(/<think>[\s\S]*?<\/think>/g, '')
-    .trim()
-  const start = cleaned.search(/[{[]/)
-  if (start < 0) throw new Error('JSON が見つかりません')
-  // 最初の { の直後に "kind":"<kind>", を差し込む
-  const head = cleaned.slice(0, start + 1)
-  const tail = cleaned.slice(start + 1)
-  const injected = `${head}"kind":"${kind}",${tail}`
-  return parseRecordOutput(injected)
-}
-
-// kind に応じた stage2 プロンプトを返す。 unknown は stage2 を走らせない。
-const getStage2Prompt = (kind) => {
-  if (kind === 'food') return buildStage2FoodPrompt()
-  if (kind === 'weight') return buildStage2WeightPrompt()
-  if (kind === 'activity') return buildStage2ActivityPrompt()
-  if (kind === 'recipe') return buildRecipeSystemPrompt()
-  return null
-}
+// kind に応じた stage2 プロンプトを返す (本実装と共有 / Chat.js export)。
+const getStage2Prompt = (kind) => getStage2PromptFor(kind)
 
 export default function BenchmarkScreen() {
   const [role, setRole] = useState('parser')

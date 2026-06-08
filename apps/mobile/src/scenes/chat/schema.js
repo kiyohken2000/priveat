@@ -388,6 +388,29 @@ export const parseRecordOutput = (rawOutput) => {
   }
 }
 
+// 2-stage parser 用: stage2 の出力は kind フィールドを含まない設計
+// (ルール分類で確定済みなので重複排除 + qwen3-0.6b の入れ子バグ回避)。
+// ここで kind を JSON 先頭に注入してから parseRecordOutput に渡す。
+//   - food: stage2 が {"items":[...]} 形式なので parseRecordOutput の
+//     "kind 欠落 + items あり" 互換挙動でそのまま food として扱われる。
+//   - weight/activity/recipe: 1 文字目の "{" 直後に "kind":"<kind>", を挿入。
+//   - unknown: LLM 呼ばずに即返す。
+export const parseStage2Output = (rawOutput, kind) => {
+  if (kind === 'unknown') return { kind: 'unknown' }
+  if (kind === 'food') return parseRecordOutput(rawOutput)
+  if (!rawOutput) throw new Error('stage2 出力が空です')
+
+  const cleaned = String(rawOutput)
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .trim()
+  const start = cleaned.search(/[{[]/)
+  if (start < 0) throw new Error('JSON が見つかりません')
+  const head = cleaned.slice(0, start + 1)
+  const tail = cleaned.slice(start + 1)
+  const injected = `${head}"kind":"${kind}",${tail}`
+  return parseRecordOutput(injected)
+}
+
 export const normalizePortion = (raw) => {
   if (!raw) return 'normal'
   if (raw.includes('大')) return 'large'

@@ -26,7 +26,7 @@ import RecipeCard from './RecipeCard'
 import WeightCard from './WeightCard'
 import ActivityCard from './ActivityCard'
 import UnknownOcrCard from './UnknownOcrCard'
-import { getRecordSchemaPrompt, normalizePortion, parseRecordOutput } from './schema'
+import { getRecordSchemaPrompt, normalizePortion, parseRecordOutput, parseStage2Output } from './schema'
 import { computeKcalFromMatch, findBestFood } from '../../db/search'
 import {
   countFoodLog,
@@ -506,6 +506,17 @@ const RECIPE_FEW_SHOT_EXAMPLES = `以下の例を参考にしてください:
 export const buildRecipeSystemPrompt = () =>
   `${RECIPE_PARSER_SYSTEM_PROMPT}\n${getRecordSchemaPrompt()}\n${RECIPE_FEW_SHOT_EXAMPLES}\n/no_think`
 
+// kind に応じた stage2 プロンプトを返す。 unknown は LLM を走らせない (null)。
+//   - recipe は専用 system prompt (RECIPE_PARSER_SYSTEM_PROMPT) を使う。 2-stage 経路でも
+//     既存の単発レシピプロンプトをそのまま流用する (recipe は元々 few-shot がしっかりしている)。
+export const getStage2PromptFor = (kind) => {
+  if (kind === 'food') return STAGE2_FOOD_PROMPT
+  if (kind === 'weight') return STAGE2_WEIGHT_PROMPT
+  if (kind === 'activity') return STAGE2_ACTIVITY_PROMPT
+  if (kind === 'recipe') return buildRecipeSystemPrompt()
+  return null
+}
+
 const makeDummyCardMessage = () => {
   const stamp = Date.now()
   return {
@@ -591,6 +602,81 @@ const makeLabelRecordMessage = (productId, ocrData) => {
   }
 }
 
+// 2-stage parser 経路で localMessages に積む assistant 側カード IMessage 群。
+// FoodCard / RecipeCard / WeightCard / ActivityCard が currentMessage の各フィールド
+// (foodItems / recipe / weightRecord / activityRecord) で振り分けされるので、それぞれに
+// 合わせて整形する。 _id は 'local-' プレフィックスで揃え、 編集ハンドラ側 (findFoodItemSnapshot
+// など) はこのプレフィックスで localMessages 経路と llm.messageHistory 経路を判別する。
+const synthFoodCardMessage = (foodItems, opts = {}) => {
+  const stamp = Date.now()
+  return {
+    _id: `local-food-${stamp}`,
+    text: '',
+    createdAt: new Date(stamp + 1),
+    user: ASSISTANT,
+    foodItems,
+    ...(opts.truncated ? { truncated: true } : {}),
+  }
+}
+
+const synthRecipeCardMessage = (recipe, opts = {}) => {
+  const stamp = Date.now()
+  return {
+    _id: `local-recipe-${stamp}`,
+    text: '',
+    createdAt: new Date(stamp + 1),
+    user: ASSISTANT,
+    recipe,
+    ...(opts.truncated ? { truncated: true } : {}),
+  }
+}
+
+const synthWeightCardMessage = (weightKg) => {
+  const stamp = Date.now()
+  return {
+    _id: `local-weight-${stamp}`,
+    text: '',
+    createdAt: new Date(stamp + 1),
+    user: ASSISTANT,
+    weightRecord: {
+      initial_kg: weightKg,
+      savedWeightLogId: undefined,
+      savedSummary: undefined,
+    },
+  }
+}
+
+const synthActivityCardMessage = (payload) => {
+  const stamp = Date.now()
+  return {
+    _id: `local-activity-${stamp}`,
+    text: '',
+    createdAt: new Date(stamp + 1),
+    user: ASSISTANT,
+    activityRecord: {
+      initial_name: payload.activity_name,
+      initial_duration_min: payload.duration_min,
+      initial_distance_km: payload.distance_km,
+      initial_kcal: payload.estimated_kcal,
+      met: payload.met,
+      weight_kg_used: payload.weight_kg_used,
+      savedEnergyLogId: undefined,
+      savedSummary: undefined,
+    },
+  }
+}
+
+const synthParserErrorMessage = (errText) => {
+  const stamp = Date.now()
+  return {
+    _id: `local-perror-${stamp}`,
+    text: errText,
+    createdAt: new Date(stamp + 1),
+    user: ASSISTANT,
+    isError: true,
+  }
+}
+
 const formatFitnessResult = (data, insertedId) => {
   const lines = ['【フィットネス読取】']
   if (data.activeKcal != null) lines.push(`消費カロリー  ${data.activeKcal} kcal`)
@@ -641,20 +727,12 @@ const isItemNameInUserInput = (itemName, userText) => {
   return u.includes(n)
 }
 
-const parseAndDispatch = async (content, idx, mode = 'log', userText = '') => {
-  let parsed
-  try {
-    parsed = parseRecordOutput(content)
-  } catch (e) {
-    return {
-      error: e?.message ?? String(e),
-      stages: {
-        extracted: e?.extracted,
-        repaired: e?.repaired,
-        parsed: e?.parsed,
-      },
-    }
-  }
+// パース済み JSON オブジェクト → kind 別 enrichment (DB 検索 / kcal 計算 / mode 整合性)。
+// parseRecordOutput や parseStage2Output で JSON 化された後の共通後処理を担う。
+//   - idPrefix: foodItems[].id の prefix。 history index 経由なら "${idx}" 文字列、
+//               localMessages 経由なら "local-${stamp}" のような stamp 文字列を渡す。
+const enrichParsedRecord = async (parsedInput, { idPrefix, userText = '', mode = 'log' }) => {
+  let parsed = parsedInput
   // レシピモードでは recipe 以外を受け付けない。 parser が誤って food などを
   // 返してきた場合は強制的にエラー扱いにし、 RecipeCard が誤生成されないようにする。
   if (mode === 'recipe' && parsed.kind !== 'recipe') {
@@ -686,9 +764,17 @@ const parseAndDispatch = async (content, idx, mode = 'log', userText = '') => {
       const filteredItems = parsed.items.filter((it) =>
         isItemNameInUserInput(it?.name, userText),
       )
-      const itemsToEnrich = filteredItems.length > 0 ? filteredItems : parsed.items
+      // userText が指定されていて、 かつ全件が入力に含まれない品目だった = LLM の完全ハルシネーション
+      // (例: 「お腹すいた」 → LFM2.5 が few-shot 例の 「ごはん/バナナ/焼き魚」 を copy)。
+      // ここで parsed.items にフォールバックすると誤データを food_log INSERT してしまうので、
+      // unknown に倒して 「具体的に書いてください」 エラー表示に逃がす。
+      // userText が空のとき (旧経路フォールバック) は isItemNameInUserInput が常に true を返すので
+      // filteredItems = parsed.items となり、 ここには来ない。
+      if (userText && filteredItems.length === 0) {
+        return { kind: 'unknown' }
+      }
       const enriched = await Promise.all(
-        itemsToEnrich.map(async (it, j) => {
+        filteredItems.map(async (it, j) => {
           const matched = await findBestFood(it.name).catch((err) => {
             console.warn('[db] search failed for', it.name, err)
             return null
@@ -699,7 +785,7 @@ const parseAndDispatch = async (content, idx, mode = 'log', userText = '') => {
           const kcalSource =
             computedKcal != null ? 'db' : it.estimated_kcal != null ? 'llm_estimate' : null
           return {
-            id: `${idx}-${j}`,
+            id: `${idPrefix}-${j}`,
             name: it.name,
             quantity: it.quantity,
             unit: it.unit,
@@ -734,7 +820,7 @@ const parseAndDispatch = async (content, idx, mode = 'log', userText = '') => {
           // recipe マッチが来ても kcal_per_100g が null なので computeKcalFromMatch も null を返す。
           const ingKcal = computeKcalFromMatch(matched, ing.quantity, ing.unit, ing.name)
           return {
-            id: `recipe-${idx}-${j}`,
+            id: `recipe-${idPrefix}-${j}`,
             name: ing.name,
             quantity: ing.quantity,
             unit: ing.unit,
@@ -791,6 +877,26 @@ const parseAndDispatch = async (content, idx, mode = 'log', userText = '') => {
     }
   }
   return { kind: 'unknown' }
+}
+
+// 単発 LLM 出力 → enrich の従来経路。 llm.messageHistory 経由 (coach の assistant 行や
+// VLM 経路など) で来た JSON 文字列を parse + enrich する。 parser 本実装は 2-stage に
+// 移行したので、 これは coach モード以外では呼ばれなくなる予定 (旧フォールバック用)。
+const parseAndDispatch = async (content, idx, mode = 'log', userText = '') => {
+  let parsed
+  try {
+    parsed = parseRecordOutput(content)
+  } catch (e) {
+    return {
+      error: e?.message ?? String(e),
+      stages: {
+        extracted: e?.extracted,
+        repaired: e?.repaired,
+        parsed: e?.parsed,
+      },
+    }
+  }
+  return enrichParsedRecord(parsed, { idPrefix: String(idx), userText, mode })
 }
 
 export default function Chat() {
@@ -994,6 +1100,9 @@ export default function Chat() {
     // コーチモードでは現在の履歴はすべてコーチ応答（プレーンテキスト表示のみ）。
     // パース処理はスキップ。
     if (mode === 'coach') return
+    // 2-stage parser 本実装 (4b) 以降、 parser モード (log / recipe) では llm.sendMessage を
+    // 介さず llm.generate 直叩きで動くため、 ここで処理対象になる llm.messageHistory の
+    // assistant 行は基本的に発生しない。 防御的に loop は残してあるが空回りする。
     const base = llm.messageHistory.filter((m) => m.role !== 'system')
     base.forEach((m, idx) => {
       if (m.role !== 'assistant') return
@@ -1271,6 +1380,136 @@ export default function Chat() {
     ],
   )
 
+  // ---- 2-stage parser 本実装 (4b: llm.sendMessage を介さず llm.generate 直叩き) ---
+  // 設計:
+  //   1. ルール分類器 (classifyByRules) で kind を決定 (LLM 不要、 0ms)
+  //   2. kind 別の短い stage2 プロンプトで llm.generate() を 1 回叩く
+  //   3. 結果を parseStage2Output → enrichParsedRecord でカード描画用 shape に変換
+  //   4. 結果カード IMessage を localMessages に push (FoodCard / RecipeCard / WeightCard /
+  //      ActivityCard / エラー文字列)
+  // llm.messageHistory は触らないので、 parser のチャット履歴は localMessages 一本に統合。
+  // sendMessage 経由の従来パス (parseAndDispatch + llmCards) は coach 専用に縮退する。
+  //
+  // mode='recipe' のときは kind を強制的に 'recipe' に固定する (RecipeCard 以外を出さない)。
+  const runParserTwoStage = useCallback(
+    async (text, currentMode) => {
+      const kind = currentMode === 'recipe' ? 'recipe' : classifyByRules(text)
+      const stage2Prompt = getStage2PromptFor(kind)
+      console.log('========== Chat parser (2-stage) ==========')
+      console.log('[model]', activeModel.id, '/', activeModel.engine ?? 'unknown')
+      console.log('[mode]', currentMode)
+      console.log('[USER]', text)
+      console.log('[stage1/rule]', `kind=${kind}`)
+      if (!stage2Prompt) {
+        // unknown など LLM 不要の kind
+        console.log('[stage2] skipped (kind has no prompt)')
+        console.log('===========================================')
+        return { kind: 'unknown' }
+      }
+      let stage2Out = ''
+      try {
+        const t2 = Date.now()
+        const raw = await llm.generate([
+          { role: 'system', content: stage2Prompt },
+          { role: 'user', content: text },
+        ])
+        stage2Out = typeof raw === 'string' ? raw : String(raw ?? '')
+        console.log('[stage2]', `${Date.now() - t2}ms`)
+        console.log('[LLM raw]', stage2Out)
+      } catch (e) {
+        console.warn('[parser 2-stage] generate failed:', e?.message ?? e)
+        console.log('===========================================')
+        return { error: e?.message ?? String(e) }
+      }
+      let parsed
+      try {
+        parsed = parseStage2Output(stage2Out, kind)
+      } catch (e) {
+        console.warn('[parser 2-stage] parse failed:', e?.message ?? e)
+        console.log('===========================================')
+        return {
+          error: e?.message ?? String(e),
+          stages: {
+            extracted: e?.extracted,
+            repaired: e?.repaired,
+            parsed: e?.parsed,
+          },
+        }
+      }
+      const result = await enrichParsedRecord(parsed, {
+        idPrefix: `local-${Date.now()}`,
+        userText: text,
+        mode: currentMode,
+      })
+      console.log('[enriched]', JSON.stringify(result, null, 2))
+      console.log('===========================================')
+      return result
+    },
+    [llm, activeModel],
+  )
+
+  // 2-stage parser の結果 → localMessages 反映 + DB 副作用 (food_log insert)。
+  // food は parseAndDispatch 旧経路と同じく即時 insertFoodLogItems して foodLogId を貼る。
+  // weight / activity は WeightCard / ActivityCard のユーザー入力を待ってから保存するので
+  // ここでは DB 書き込みしない (カードを置くだけ)。
+  const handleParserResult = useCallback(async (result, currentMode) => {
+    if (result.kind === 'food' && result.foodItems) {
+      let foodItems = result.foodItems
+      try {
+        const insertedIds = await insertFoodLogItems(foodItems)
+        foodItems = foodItems.map((it, j) => ({
+          ...it,
+          foodLogId: insertedIds[j] ?? null,
+        }))
+        const total = await countFoodLog()
+        console.log(`[food_log] inserted ${insertedIds.length} rows (total ${total})`, insertedIds)
+      } catch (e) {
+        console.warn('[food_log] insert failed:', e?.message ?? e)
+      }
+      setLocalMessages((prev) => [
+        ...prev,
+        synthFoodCardMessage(foodItems, { truncated: result.truncated }),
+      ])
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+      return
+    }
+    if (result.kind === 'recipe' && result.recipe) {
+      setLocalMessages((prev) => [
+        ...prev,
+        synthRecipeCardMessage(result.recipe, { truncated: result.truncated }),
+      ])
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+      return
+    }
+    if (result.kind === 'weight') {
+      setLocalMessages((prev) => [...prev, synthWeightCardMessage(result.weight_kg)])
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+      return
+    }
+    if (result.kind === 'activity') {
+      setLocalMessages((prev) => [...prev, synthActivityCardMessage(result)])
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+      return
+    }
+    if (result.kind === 'unknown') {
+      setLocalMessages((prev) => [
+        ...prev,
+        synthParserErrorMessage(
+          '食事・体重・運動のいずれにも判定できませんでした。書き方を変えて試してみてください。',
+        ),
+      ])
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {})
+      return
+    }
+    // error 経路
+    const errText =
+      currentMode === 'recipe'
+        ? result.error || '材料リストとして解釈できませんでした。'
+        : '記録を抽出できませんでした。もう少し具体的に書いてみてください。'
+    setLocalMessages((prev) => [...prev, synthParserErrorMessage(errText)])
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {})
+  }, [])
+
   const onSend = useCallback(
     async (sent) => {
       if (!sent.length) return
@@ -1282,8 +1521,8 @@ export default function Chat() {
       }
       if (!llm.isReady || llm.isGenerating) return
 
-      // コーチモードのみ、毎回最新の DB コンテキストで再 configure（履歴は維持）。
       if (mode === 'coach') {
+        // コーチモードのみ、毎回最新の DB コンテキストで再 configure（履歴は維持）。
         try {
           const preservedHistory = llm.messageHistory.filter((m) => m.role !== 'system')
           const context = await buildCoachingContext()
@@ -1297,10 +1536,19 @@ export default function Chat() {
         } catch (e) {
           console.warn('[coach] context build failed:', e)
         }
+        llm.sendMessage(text)
+        return
       }
-      llm.sendMessage(text)
+
+      // 記録 / レシピモード = 2-stage parser 経路 (llm.sendMessage を経由しない)。
+      //   - user message を即座に localMessages に積んでチャット UI を更新
+      //   - llm.generate で stage2 を 1 回叩く (isGenerating が立つので isTyping も出る)
+      //   - 結果に応じたカードを localMessages に追加
+      setLocalMessages((prev) => [...prev, makeUserMessage(text)])
+      const result = await runParserTwoStage(text, mode)
+      await handleParserResult(result, mode)
     },
-    [llm, mode],
+    [llm, mode, runParserTwoStage, handleParserResult],
   )
 
   // 画像 → OCR → 振り分け → 保存 → 結果表示 の共通ハンドラ。
@@ -1600,7 +1848,7 @@ export default function Chat() {
 
   // ref ミラーから (messageId, itemId) で foodItem を引く。
   const findFoodItemSnapshot = useCallback((messageId, itemId) => {
-    if (messageId.startsWith('local-card-') || messageId.startsWith('local-vlm-')) {
+    if (messageId.startsWith('local-')) {
       const m = localMessagesRef.current.find((x) => x._id === messageId)
       return m?.foodItems?.find((it) => it.id === itemId) ?? null
     }
@@ -1613,7 +1861,7 @@ export default function Chat() {
 
   // foodItem を patch でマージしてローカル state に反映。
   const applyFoodItemPatch = useCallback((messageId, itemId, patch) => {
-    if (messageId.startsWith('local-card-') || messageId.startsWith('local-vlm-')) {
+    if (messageId.startsWith('local-')) {
       setLocalMessages((prev) =>
         prev.map((m) =>
           m._id === messageId && m.foodItems
@@ -1643,7 +1891,7 @@ export default function Chat() {
   }, [])
 
   const removeFoodItemRow = useCallback((messageId, itemId) => {
-    if (messageId.startsWith('local-card-') || messageId.startsWith('local-vlm-')) {
+    if (messageId.startsWith('local-')) {
       setLocalMessages((prev) =>
         prev.map((m) =>
           m._id === messageId && m.foodItems
@@ -1758,7 +2006,7 @@ export default function Chat() {
       }
       // メッセージから対象 item を集める。
       let foodItems = null
-      if (messageId.startsWith('local-card-') || messageId.startsWith('local-vlm-')) {
+      if (messageId.startsWith('local-')) {
         foodItems = localMessagesRef.current.find((m) => m._id === messageId)?.foodItems
       } else if (messageId.startsWith('h-')) {
         const idx = Number(messageId.slice(2))
@@ -1868,19 +2116,70 @@ export default function Chat() {
     [estimatingMessageId, llm, currentRole, setCurrentRole, applyFoodItemPatch],
   )
 
-  // RecipeCard 操作のヘルパ。 llmCards[idx].recipe を直接書き換える。
-  // recipe カードは log モードでのみ生成されるので messageId は常に 'h-<idx>'。
+  // RecipeCard 操作のヘルパ。 messageId の prefix で localMessages / llmCards を振り分ける。
+  //   - 'h-<idx>'  → llmCards[idx].recipe (旧経路: llm.messageHistory 由来)
+  //   - 'local-'   → localMessages[*].recipe (2-stage 経路: parser 出力直挿し)
+  const findRecipeSnapshot = useCallback((messageId) => {
+    if (messageId?.startsWith('local-')) {
+      return localMessagesRef.current.find((m) => m._id === messageId)?.recipe ?? null
+    }
+    if (messageId?.startsWith('h-')) {
+      const idx = Number(messageId.slice(2))
+      return llmCardsRef.current[idx]?.recipe ?? null
+    }
+    return null
+  }, [])
+
   const applyRecipePatch = useCallback((messageId, recipePatch) => {
-    if (!messageId?.startsWith('h-')) return
-    const idx = Number(messageId.slice(2))
-    setLlmCards((prev) => {
-      const entry = prev[idx]
-      if (!entry?.recipe) return prev
-      return {
-        ...prev,
-        [idx]: { ...entry, recipe: { ...entry.recipe, ...recipePatch } },
-      }
-    })
+    if (messageId?.startsWith('local-')) {
+      setLocalMessages((prev) =>
+        prev.map((m) =>
+          m._id === messageId && m.recipe
+            ? { ...m, recipe: { ...m.recipe, ...recipePatch } }
+            : m,
+        ),
+      )
+      return
+    }
+    if (messageId?.startsWith('h-')) {
+      const idx = Number(messageId.slice(2))
+      setLlmCards((prev) => {
+        const entry = prev[idx]
+        if (!entry?.recipe) return prev
+        return {
+          ...prev,
+          [idx]: { ...entry, recipe: { ...entry.recipe, ...recipePatch } },
+        }
+      })
+    }
+  }, [])
+
+  // ingredients 配列の map / filter を localMessages / llmCards 両対応で実行する。
+  const applyRecipeIngredientsPatch = useCallback((messageId, transform) => {
+    if (messageId?.startsWith('local-')) {
+      setLocalMessages((prev) =>
+        prev.map((m) =>
+          m._id === messageId && m.recipe
+            ? { ...m, recipe: { ...m.recipe, ingredients: transform(m.recipe.ingredients) } }
+            : m,
+        ),
+      )
+      return
+    }
+    if (messageId?.startsWith('h-')) {
+      const idx = Number(messageId.slice(2))
+      setLlmCards((prev) => {
+        const entry = prev[idx]
+        if (!entry?.recipe) return prev
+        return {
+          ...prev,
+          [idx]: {
+            ...entry,
+            recipe: { ...entry.recipe, ingredients: transform(entry.recipe.ingredients) },
+          },
+        }
+      })
+    }
   }, [])
 
   const updateRecipeServings = useCallback(
@@ -1897,12 +2196,8 @@ export default function Chat() {
     (messageId, ingId, qtyStr) => {
       const next = Number(qtyStr)
       if (!Number.isFinite(next) || next <= 0) return
-      if (!messageId?.startsWith('h-')) return
-      const idx = Number(messageId.slice(2))
-      setLlmCards((prev) => {
-        const entry = prev[idx]
-        if (!entry?.recipe) return prev
-        const ings = entry.recipe.ingredients.map((ing) => {
+      applyRecipeIngredientsPatch(messageId, (ings) =>
+        ings.map((ing) => {
           if (ing.id !== ingId) return ing
           if (ing.quantity === next) return ing
           const scaled =
@@ -1910,29 +2205,20 @@ export default function Chat() {
               ? Math.round((ing.kcal * next) / ing.quantity)
               : ing.kcal
           return { ...ing, quantity: next, kcal: scaled }
-        })
-        return {
-          ...prev,
-          [idx]: { ...entry, recipe: { ...entry.recipe, ingredients: ings } },
-        }
-      })
+        }),
+      )
     },
-    [],
+    [applyRecipeIngredientsPatch],
   )
 
-  const deleteRecipeIngredient = useCallback((messageId, ingId) => {
-    if (!messageId?.startsWith('h-')) return
-    const idx = Number(messageId.slice(2))
-    setLlmCards((prev) => {
-      const entry = prev[idx]
-      if (!entry?.recipe) return prev
-      const ings = entry.recipe.ingredients.filter((ing) => ing.id !== ingId)
-      return {
-        ...prev,
-        [idx]: { ...entry, recipe: { ...entry.recipe, ingredients: ings } },
-      }
-    })
-  }, [])
+  const deleteRecipeIngredient = useCallback(
+    (messageId, ingId) => {
+      applyRecipeIngredientsPatch(messageId, (ings) =>
+        ings.filter((ing) => ing.id !== ingId),
+      )
+    },
+    [applyRecipeIngredientsPatch],
+  )
 
   // RecipeCard の「保存」ボタンハンドラ。 db/recipes.saveRecipe へ書き込み、
   // llmCards のエントリを saved=true にする。 以後の再利用は findBestFood が拾う。
@@ -1940,10 +2226,7 @@ export default function Chat() {
   const handleSaveRecipe = useCallback(
     async (messageId) => {
       if (savingRecipeMessageId) return
-      if (!messageId?.startsWith('h-')) return
-      const idx = Number(messageId.slice(2))
-      const entry = llmCardsRef.current[idx]
-      const recipe = entry?.recipe
+      const recipe = findRecipeSnapshot(messageId)
       if (!recipe || recipe.saved) return
       const ings = recipe.ingredients ?? []
       if (ings.length === 0) {
@@ -1979,7 +2262,7 @@ export default function Chat() {
         setSavingRecipeMessageId(null)
       }
     },
-    [savingRecipeMessageId, applyRecipePatch],
+    [savingRecipeMessageId, applyRecipePatch, findRecipeSnapshot],
   )
 
   // RecipeCard の「AI 推定」ボタン。 ingredients の kcal=null を埋める。
@@ -1992,10 +2275,8 @@ export default function Chat() {
         Alert.alert('AI モデルが準備中', '少し待ってから「AI推定」を押してください。')
         return
       }
-      if (!messageId?.startsWith('h-')) return
-      const idx = Number(messageId.slice(2))
-      const entry = llmCardsRef.current[idx]
-      const ings = entry?.recipe?.ingredients ?? []
+      const recipe = findRecipeSnapshot(messageId)
+      const ings = recipe?.ingredients ?? []
       const targets = ings.filter((ing) => ing.kcal == null && ing.name?.trim())
       if (targets.length === 0) return
 
@@ -2050,19 +2331,13 @@ export default function Chat() {
             modelLabel: coachModel?.id ?? 'coach',
             onItemDone: (it, result) => {
               if (!result.ok) return
-              setLlmCards((prev) => {
-                const e2 = prev[idx]
-                if (!e2?.recipe) return prev
-                const next = e2.recipe.ingredients.map((ing) =>
+              applyRecipeIngredientsPatch(messageId, (curIngs) =>
+                curIngs.map((ing) =>
                   ing.id === it.id
                     ? { ...ing, kcal: result.kcal, kcalSource: 'llm_estimate' }
                     : ing,
-                )
-                return {
-                  ...prev,
-                  [idx]: { ...e2, recipe: { ...e2.recipe, ingredients: next } },
-                }
-              })
+                ),
+              )
             },
           },
         )
@@ -2078,7 +2353,7 @@ export default function Chat() {
         setEstimatingPhase(null)
       }
     },
-    [estimatingMessageId, llm, currentRole, setCurrentRole, coachModel],
+    [estimatingMessageId, llm, currentRole, setCurrentRole, coachModel, findRecipeSnapshot, applyRecipeIngredientsPatch],
   )
 
   // FoodCard の行削除ハンドラ。ローカル state から除去し、保存済みなら food_log も DELETE。
@@ -2219,6 +2494,21 @@ export default function Chat() {
             },
           }
         })
+      } else if (messageId.startsWith('local-')) {
+        setLocalMessages((prev) =>
+          prev.map((m) =>
+            m._id === messageId && m.weightRecord
+              ? {
+                  ...m,
+                  weightRecord: {
+                    ...m.weightRecord,
+                    savedWeightLogId: id,
+                    savedSummary: summary,
+                  },
+                }
+              : m,
+          ),
+        )
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
     },
@@ -2304,6 +2594,21 @@ export default function Chat() {
             },
           }
         })
+      } else if (messageId.startsWith('local-')) {
+        setLocalMessages((prev) =>
+          prev.map((m) =>
+            m._id === messageId && m.activityRecord
+              ? {
+                  ...m,
+                  activityRecord: {
+                    ...m.activityRecord,
+                    savedEnergyLogId: id,
+                    savedSummary: summary,
+                  },
+                }
+              : m,
+          ),
+        )
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
     },
