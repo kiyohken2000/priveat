@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Link, Outlet } from 'react-router-dom'
 import Landing from './pages/Landing'
 import Privacy from './pages/Privacy'
 import Terms from './pages/Terms'
+import Support from './pages/Support'
 import './App.css'
 
 function Layout() {
@@ -10,6 +11,7 @@ function Layout() {
       <header className="header">
         <Link to="/" className="brand">Priveat</Link>
         <nav className="nav">
+          <Link to="/support">サポート</Link>
           <Link to="/privacy">プライバシーポリシー</Link>
           <Link to="/terms">利用規約</Link>
         </nav>
@@ -36,6 +38,7 @@ export default function App() {
           <Route index element={<Landing />} />
           <Route path="privacy" element={<Privacy />} />
           <Route path="terms" element={<Terms />} />
+          <Route path="support" element={<Support />} />
         </Route>
       </Routes>
     </BrowserRouter>

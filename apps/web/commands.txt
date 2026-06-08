@@ -20,3 +20,4 @@ npx wrangler pages deployment tail --project-name=priveat         # ログをラ
 // https://priveat.pages.dev/
 // https://priveat.pages.dev/privacy
 // https://priveat.pages.dev/terms
+// https://priveat.pages.dev/support
