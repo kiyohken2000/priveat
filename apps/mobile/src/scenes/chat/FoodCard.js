@@ -59,11 +59,14 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
             style={styles.nameInput}
             value={draft}
             onChangeText={setDraft}
-            onCommit={(picked) => {
+            onCommit={(picked, food) => {
               setDraft(picked)
               setEditing(false)
               if (picked && picked !== item.name) {
-                onUpdateItem?.(messageId, item.id, { name: picked })
+                // picked food (foods 行) を patch に載せて parent 側で
+                // findBestFood top-1 上書きを回避させる。
+                // ユーザーがサジェストで指したまさにその食品で kcal 計算される。
+                onUpdateItem?.(messageId, item.id, { name: picked, matchedFood: food })
               }
             }}
             onBlur={commitEdit}

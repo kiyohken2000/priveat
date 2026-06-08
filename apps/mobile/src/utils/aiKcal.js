@@ -73,6 +73,46 @@ export const kcalFromKeyword = (name) => {
 // 速度向上のために (a) 即決を強く要求、 (b) 同じ事を 2 度書かない、 (c) 即時 <answer> 出力、を明示する。
 // repetitionPenalty を per-call で設定する API がない (configure は chatConfig もリセットするため
 // 副作用大) ので、プロンプト側で抑制する。
+// 食材 (ingredient) モード用プロンプト。 完成料理ではなく、 自炊レシピの材料
+// (ホールトマト 1 缶、 ひき肉 500g、 油 大さじ 1 など) を扱う。 meal プロンプトの
+// レンジ (ラーメン 600〜1200 等) を流用すると、 該当カテゴリが無い食材で
+// モデルが消去法でラーメン枠を吐く事故が起きるため完全に別系統。
+//
+// 設計:
+//   - 「1 人前」 ではなく「指定された分量の総 kcal」 を出させる (qty×unit を読ませる)
+//   - カテゴリは「per 100g」「per 缶」「per 大さじ」 など単位込みで提示
+//     (LLM が単位換算しなくても済むように具体例で固定する)
+//   - レンジ表記 (n〜m) は禁止 (parseKcal 側でも mode=ingredient では中央値救済を切る)
+const INGREDIENT_SYSTEM_PROMPT =
+  'あなたは食材の kcal 推定の専門家で、 答えを即決します。 食材名と分量を受け取り、 その分量の合計 kcal を整数で答えます。\n\n'
+  + '参考の典型値 (1単位あたり):\n'
+  + '- 生野菜 (キャベツ・大根・なす・ピーマン・パプリカなど): 100g ≒ 20〜40 kcal、 1 個 ≒ 30〜80 kcal\n'
+  + '- 葉物野菜 (レタス・ほうれん草・しめじ・えのき): 100g ≒ 15〜25 kcal\n'
+  + '- いも類 (じゃがいも・さつまいも): 100g ≒ 70〜130 kcal\n'
+  + '- 缶詰野菜 (ホールトマト缶・コーン缶): 1 缶 (約 400g) ≒ 80〜150 kcal\n'
+  + '- 缶詰魚 (ツナ缶・サバ缶): 1 缶 ≒ 150〜300 kcal\n'
+  + '- 肉類 生 (鶏むね・豚バラ・牛・ひき肉): 100g ≒ 110〜380 kcal\n'
+  + '- 魚 生: 100g ≒ 100〜200 kcal\n'
+  + '- 卵: 1 個 (約 60g) ≒ 90 kcal\n'
+  + '- 油類 (サラダ油・オリーブ油・ごま油): 大さじ 1 (12g) ≒ 110 kcal、 100g ≒ 900 kcal\n'
+  + '- バター: 10g ≒ 75 kcal\n'
+  + '- 砂糖: 大さじ 1 (9g) ≒ 35 kcal\n'
+  + '- 米 (生): 100g ≒ 350 kcal\n'
+  + '- 小麦粉: 100g ≒ 360 kcal\n'
+  + '- 麺類 乾麺 (パスタ・うどん乾麺): 100g ≒ 350 kcal\n'
+  + '- 牛乳: 200ml ≒ 130 kcal\n'
+  + '- 調味料 (醤油・味噌・酒・みりん): 大さじ 1 ≒ 10〜35 kcal\n'
+  + '- 固形ルウ・コンソメ (カレールゥ・コンソメ): 1 個分 ≒ 50〜120 kcal\n\n'
+  + 'やり方: 食材を分類 → 該当する単位あたり kcal を取得 → 指定分量で掛け算 → 整数 1 つを出力。\n\n'
+  + '出力ルール (厳守、 違反は禁止):\n'
+  + '1. <think> 内は 1 文だけで「分類 X、 1 単位 N kcal × 数量 → 答え M」と書き、 すぐ </think> で閉じる\n'
+  + '2. </think> 直後に <answer>M</answer> の 1 行だけを書く\n'
+  + '3. 「〜」「範囲」「kcal」の文字、 英語、 中国語、 説明文、 改行は禁止 (日本語のみ使用)\n'
+  + '4. 答えは整数 1 つだけ。 範囲を返さない。'
+
+const buildIngredientUserPrompt = (name, qty, unit) =>
+  `${name.trim()} ${qty}${unit.trim()} は合計で何 kcal? 即答してください。`
+
 const SYSTEM_PROMPT =
   'あなたは日本食のカロリー推定の専門家で、答えを即決します。料理名と分量を受け取り、1人前あたりの kcal を答えます。\n\n' +
   '参考カテゴリ別レンジ (1人前、必ずこのレンジから整数を1つ選ぶ):\n' +
@@ -104,7 +144,20 @@ const buildUserPrompt = (name, qty, unit) =>
 //  - 次点: 「答え: N」 (互換)
 //  - 次点: 「N〜M」レンジが含まれている場合は中央値 — 1.7B がプロンプトのレンジをそのまま転記する事例があった
 //  - 閉じていない <think> を含む場合: CoT 途中で max_seq_len に当たって切断 → null
-const parseKcal = (raw) => {
+// mode='ingredient' は meal とフォールバック戦略を変える:
+//   - meal は「<answer> → 答え: → range中央値 → 最初の数字」
+//   - ingredient は「<answer> → 答え: → range中央値 → 最後の数字 (qty 除外)」
+//
+// 違いの理由:
+//   1) ingredient の出力は category prompt のレンジを echo しがちで、 中央値の方が
+//      実値に近い (ホールトマト 80〜150 → 115、 カレールゥ 50〜120 → 85)。
+//      よって range 中央値は ingredient でも有効化する。
+//   2) ingredient プロンプトは「<分量> は合計で何 kcal?」 と聞くため、 LLM の応答に
+//      ユーザー入力の数字 ("3個"、 "5本") が混ざりやすい。 「最初の数字」 を取ると
+//      その qty を答えと誤認するので、 ingredient では「最後の数字」 かつ
+//      excludeNums で qty を弾く。
+//      例: "100g ≒ 40 kcal、5本で 200kcal" → qty=5 除外、 末尾 200 を採用。
+const parseKcal = (raw, { mode = 'meal', excludeNums = [] } = {}) => {
   const text = String(raw ?? '')
   // <think>...</think> ペアを除去 (まず正常な閉じタグを取り除く)
   const stripped = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
@@ -123,7 +176,51 @@ const parseKcal = (raw) => {
     const n = parseInt(answerMatch[1], 10)
     if (Number.isFinite(n) && n > 0 && n <= 2000) return n
   }
-  // 3) 「N〜M」レンジ → 中央値 (1.7B がプロンプトのレンジをそのまま返す事例の救済)
+  if (mode === 'ingredient') {
+    // ingredient mode (a): まず「答えは N」 「整数で答えると N」 「結論は N」 などの
+    // anchor marker を末尾優先で探す。 これらは LLM が「最終結論」 を宣言した
+    // シグナルなので、 直前のレンジより信頼度が高い。
+    //   例: "... 400〜650 kcal。整数で答えると 500"
+    //     → marker "整数で答えると 500" を採用 (前段の range を拾わない)
+    const markerRe = /(?:答えは|答えは約|整数で答えると|結論は?|結果は?|したがって|よって)\s*[:：]?\s*[*＊]*\s*(\d+)/gi
+    const markers = [...stripped.matchAll(markerRe)]
+    if (markers.length > 0) {
+      const last = markers[markers.length - 1]
+      const n = parseInt(last[1], 10)
+      if (Number.isFinite(n) && n > 0 && n <= 2000) return n
+    }
+    // ingredient mode (b): 「N kcal」 「N〜M kcal」 の最後のマッチを優先する。
+    // 理由: 説明文の末尾に最終答えが書かれる傾向が強い。
+    //   "ピーマン ... 30 × 5 = 150 kcal" → 末尾 "150 kcal" を取る
+    //   "パプリカ 1個 ≒ 80〜150 kcal、 2個は 160〜300 kcal" → 末尾 "160〜300 kcal" の中央値 230
+    //   "ホールトマト ... 80〜150 kcal" → 中央値 115
+    const kcalMatches = [...stripped.matchAll(/(\d+)(?:\s*[〜～~\-–—]\s*(\d+))?\s*kcal/gi)]
+    if (kcalMatches.length > 0) {
+      const last = kcalMatches[kcalMatches.length - 1]
+      if (last[2]) {
+        const lo = parseInt(last[1], 10)
+        const hi = parseInt(last[2], 10)
+        if (Number.isFinite(lo) && Number.isFinite(hi) && lo > 0 && hi > 0 && lo <= 2000 && hi <= 2000 && hi >= lo) {
+          return Math.round((lo + hi) / 2)
+        }
+      } else {
+        const n = parseInt(last[1], 10)
+        if (Number.isFinite(n) && n > 0 && n <= 2000) return n
+      }
+    }
+    // kcal 修飾が一切ないケース ("1100" だけ等) → qty 除外して最後の数字
+    const excludeStrs = new Set(excludeNums.map((n) => String(n)))
+    const allMatches = stripped.match(/\d+/g) ?? []
+    const candidates = allMatches
+      .filter((s) => !excludeStrs.has(s))
+      .map((s) => parseInt(s, 10))
+      .filter((n) => Number.isFinite(n) && n > 0 && n <= 2000)
+    if (candidates.length > 0) return candidates[candidates.length - 1]
+    return null
+  }
+
+  // meal mode: 既存ロジック (3=range中央値 → 4=最初の数字)
+  // 3) 「N〜M」レンジ → 中央値 (1.7B のプロンプト echo 救済)
   const rangeMatch = stripped.match(/(\d+)\s*[〜～~\-–—]\s*(\d+)/)
   if (rangeMatch) {
     const lo = parseInt(rangeMatch[1], 10)
@@ -153,19 +250,39 @@ const parseKcal = (raw) => {
 //   4) LLM 失敗 + キーワードなし → エラー
 //
 // 戻り値: { ok: true, kcal, source } | { ok: false, error }
-export const estimateKcalForFood = async (llm, { name, quantity, unit, modelLabel } = {}) => {
+// mode:
+//   'meal' (既定)      : 完成料理 (1 人前) 推定。 keyword fallback / range-midpoint 救済あり
+//   'ingredient'        : 自炊レシピの材料 (1 缶, 100g 等) 推定。 専用プロンプト、
+//                          keyword fallback 無し (meal カテゴリは食材に合わない)、
+//                          range-midpoint 救済も切る
+export const estimateKcalForFood = async (
+  llm,
+  { name, quantity, unit, modelLabel, mode = 'meal' } = {},
+) => {
   if (!name?.trim()) return { ok: false, error: '食品名が空です' }
   if (!unit?.trim()) return { ok: false, error: '単位が空です' }
   if (!llm || !llm.isReady || llm.isGenerating) {
     return { ok: false, error: 'AI モデルがまだ準備中です' }
   }
   const qty = Number.isFinite(quantity) && quantity > 0 ? quantity : 1
+  const isIngredient = mode === 'ingredient'
   const messages = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: buildUserPrompt(name, qty, unit) },
+    {
+      role: 'system',
+      content: isIngredient ? INGREDIENT_SYSTEM_PROMPT : SYSTEM_PROMPT,
+    },
+    {
+      role: 'user',
+      content: isIngredient
+        ? buildIngredientUserPrompt(name, qty, unit)
+        : buildUserPrompt(name, qty, unit),
+    },
   ]
-  const keyword = kcalFromKeyword(name)
+  // ingredient モードでは meal 用キーワード表は使わない (ホールトマトを「サラダ」
+  // にマッチさせて副菜中央値 125 を返すような誤フォールバックを防ぐ)
+  const keyword = isIngredient ? null : kcalFromKeyword(name)
   console.log('========== AI kcal estimate ==========')
+  console.log('[mode]', mode)
   console.log('[name]', name)
   console.log('[model]', modelLabel ?? '(unknown)')
   console.log('[keyword]', keyword ? `${keyword.category} (${keyword.low}〜${keyword.high})` : '(none)')
@@ -173,7 +290,12 @@ export const estimateKcalForFood = async (llm, { name, quantity, unit, modelLabe
   try {
     const raw = await llm.generate(messages)
     console.log('[raw]', raw)
-    const llmKcal = parseKcal(raw)
+    // ingredient モード: 出力にユーザー入力 qty が混ざる ("3個" の 3 等) ので
+    // パーサ側で除外。 「3」 を除外しても「30」 「300」 は別文字列なので残る。
+    const llmKcal = parseKcal(raw, {
+      mode,
+      excludeNums: isIngredient ? [qty] : [],
+    })
 
     if (llmKcal != null) {
       // キーワードがあれば LLM 値の妥当性をチェック
@@ -233,7 +355,7 @@ export const estimateKcalBatch = async (llm, items, { modelLabel, onItemDone } =
     })
     const entry = { id: it.id, ...r }
     results.push(entry)
-    onItemDone?.(it, entry)
+    if (onItemDone) onItemDone(it, entry)
   }
   return results
 }

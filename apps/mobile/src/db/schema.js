@@ -184,6 +184,42 @@ export const MIGRATIONS = [
       );
     `,
   },
+  // v8: 自炊レシピ (まとめ作り) のマスタとその材料行。
+  //   - recipes: 「カレー (5食分, total=2400 kcal)」のような完成料理マスタ。
+  //     1食あたり kcal を kcal_per_serving に冗長保存 (total/servings の除算結果)。
+  //     findBestFood が完全一致で recipes を優先する際に使う。
+  //   - recipe_ingredients: 材料の内訳。後から見直し/再計算ができるよう残す。
+  //     matched_food_id は foods 行への参照 (NULL なら DB ヒットなしの推定行)。
+  //   - food_log.ref_kind='recipe' で参照する形 (既存 ref_food_id を流用)。
+  {
+    version: 8,
+    sql: `
+      CREATE TABLE IF NOT EXISTS recipes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        servings REAL NOT NULL,
+        total_kcal REAL,
+        kcal_per_serving REAL,
+        notes TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_recipes_name ON recipes(name);
+
+      CREATE TABLE IF NOT EXISTS recipe_ingredients (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        recipe_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        quantity REAL,
+        unit TEXT,
+        matched_food_id INTEGER,
+        kcal REAL,
+        kcal_source TEXT,
+        FOREIGN KEY (recipe_id) REFERENCES recipes(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_recipe_id
+        ON recipe_ingredients(recipe_id);
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version

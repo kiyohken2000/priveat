@@ -1,6 +1,7 @@
 import { getDb } from './index'
 import { lookupAlias } from '../data/foodAliases'
 import { lookupPortion } from '../data/portionWeights'
+import { findRecipeByExactName } from './recipes'
 
 // 文科省成分表の名前は "こめ　［水稲穀粒］　玄米" のように全角空白とブラケットを多用するので
 // 検索時には両方を取り除いた版でも一致を試す。
@@ -82,9 +83,42 @@ export const searchFoodsByName = async (query, limit = 5) => {
 }
 
 // LLM が抽出した name に対応する1件を返す。
-//   1. エイリアス辞書を見る → 食品コード直引き（最高精度）
-//   2. ヒットしなければ通常のあいまい検索の先頭を返す
+//   1. 自炊レシピの完全一致を優先 (ユーザー登録「カレー」は Slism「カレーライス」より優先)
+//      → recipe 行を foods スキーマ互換に正規化して返す (kind='recipe' タグ付き)
+//   2. エイリアス辞書を見る → 食品コード直引き（最高精度）
+//   3. ヒットしなければ通常のあいまい検索の先頭を返す
+//
+// 戻り値の形:
+//   - foods 行 (kind 未指定 = food)
+//   - recipe 行を foods 互換に変換したもの (kind='recipe', kcal_per_serving あり)
+//
+// recipe 互換変換は kcal_per_serving を保ち、 kcal_per_100g を null にする
+// (= computeKcalFromMatch の serving 単位フォールバック経路に乗る)。
+// ただし matched 自身の判定に kcal_per_100g を使う箇所があるので、
+// computeKcalFromMatch 側で kind='recipe' を特別扱いする。
+const adaptRecipeAsMatch = (recipe) => ({
+  id: recipe.id,
+  food_code: null,
+  name: recipe.name,
+  category: null,
+  source: 'recipe',
+  alt_name: null,
+  kcal_per_100g: null,
+  protein_per_100g: null,
+  fat_per_100g: null,
+  carb_per_100g: null,
+  salt_per_100g: null,
+  fiber_per_100g: null,
+  serving_size_g: null,
+  kcal_per_serving: recipe.kcal_per_serving,
+  kind: 'recipe',
+})
+
 export const findBestFood = async (query) => {
+  const recipe = await findRecipeByExactName(query).catch(() => null)
+  if (recipe && recipe.kcal_per_serving != null) {
+    return adaptRecipeAsMatch(recipe)
+  }
   const code = lookupAlias(query)
   if (code) {
     const direct = await getFoodByCode(code)
@@ -101,14 +135,22 @@ const SERVING_LIKE_UNITS = new Set([
 ])
 
 // 数量・単位から kcal を計算する。
+//   - matched が自炊レシピ (kind='recipe') → kcal_per_serving × quantity (単位は食/杯系想定)
 //   - "g" (グラム) → 直接計算
 //   - その他の単位 → portionWeights を引いて 1単位あたりのグラム換算 → 計算
 //   - 上記いずれも不可で matched が Slism (kcal_per_serving あり) かつ単位が
 //     "個/杯/人前/皿/…" 系なら、1 serving 換算でフォールバック
 //   - どれも当たらなければ null
 export const computeKcalFromMatch = (matchedFood, quantity, unit, originalName) => {
-  if (!matchedFood || matchedFood.kcal_per_100g == null) return null
+  if (!matchedFood) return null
   if (quantity == null || quantity <= 0) return null
+  // 自炊レシピは「1食 = kcal_per_serving」固定で計算する。 単位が serving 系で
+  // なくても (例: "1個" のような表記揺れ) 食数として扱う方が実用的。
+  if (matchedFood.kind === 'recipe') {
+    if (matchedFood.kcal_per_serving == null) return null
+    return Math.round(matchedFood.kcal_per_serving * quantity)
+  }
+  if (matchedFood.kcal_per_100g == null) return null
   const u = String(unit ?? '').trim().toLowerCase()
   if (u === 'g' || u === 'グラム') {
     return Math.round((matchedFood.kcal_per_100g * quantity) / 100)

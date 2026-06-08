@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Pressable,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -21,6 +22,7 @@ import FontIcon from 'react-native-vector-icons/FontAwesome'
 import ScreenTemplate from '../../components/ScreenTemplate'
 import { colors, fontSize } from '../../theme'
 import FoodCard from './FoodCard'
+import RecipeCard from './RecipeCard'
 import WeightCard from './WeightCard'
 import ActivityCard from './ActivityCard'
 import UnknownOcrCard from './UnknownOcrCard'
@@ -34,6 +36,8 @@ import {
   updateFoodLogItem,
 } from '../../db/foodLog'
 import { insertCoachExchange } from '../../db/chatMessages'
+import { saveRecipe } from '../../db/recipes'
+import * as Clipboard from 'expo-clipboard'
 import * as ImageManipulator from 'expo-image-manipulator'
 import { captureFromCamera, pickFromLibrary, runOcr } from './imageOcr'
 import { getVlmModelById } from '../../data/llmModelsVlm'
@@ -71,22 +75,33 @@ const MARKDOWN_STYLE = {
   link: { color: colors.lightPurple, underline: true },
 }
 
-const renderAssistantMarkdown = (textProps) => {
+// renderMessageText を Chat 内で組み立てる factory。 長押しコピーを発火させるため
+// 外側を Pressable で包み、 EnrichedMarkdownText の selectable は外す
+// (selectable=true だと内部 Text が長押しを横取りして Pressable まで届かない)。
+const makeRenderMessageText = (onLongPress) => (textProps) => {
   const msg = textProps.currentMessage
   const isAssistant = msg?.user?._id === ASSISTANT._id
   const text = (msg?.text ?? '').trim()
-  // 自分の発言・空メッセージはデフォルトの MessageText（リンク認識・コピー等の挙動を維持）
-  if (!isAssistant || !text) return <MessageText {...textProps} />
+  const inner =
+    !isAssistant || !text ? (
+      <MessageText {...textProps} />
+    ) : (
+      <View style={chatMarkdownStyles.wrap}>
+        <EnrichedMarkdownText
+          markdown={text}
+          markdownStyle={MARKDOWN_STYLE}
+          flavor="github"
+          allowTrailingMargin={false}
+        />
+      </View>
+    )
   return (
-    <View style={chatMarkdownStyles.wrap}>
-      <EnrichedMarkdownText
-        markdown={text}
-        markdownStyle={MARKDOWN_STYLE}
-        flavor="github"
-        allowTrailingMargin={false}
-        selectable
-      />
-    </View>
+    <Pressable
+      onLongPress={() => onLongPress(text)}
+      delayLongPress={350}
+    >
+      {inner}
+    </Pressable>
   )
 }
 
@@ -110,6 +125,8 @@ const renderWideMessage = (props) => (
 const COACH_SUGGESTIONS = [
   '今週どうだった？',
   '今日の調子は？',
+  '夕食何にしよう？',
+  '今日は何を食べたらいい？',
   '何を意識すべき？',
   '炭水化物多すぎる？',
   'もう少し痩せるには？',
@@ -247,7 +264,12 @@ kind ごとの出力形式:
 
 food のルール:
 - 各食品について name, quantity, unit を抽出する
-- name は一般的な表記に正規化する
+- ★最優先ルール: items はユーザー入力に **明示的に書かれた品目だけ** を抽出する。 入力に出てこない品目を絶対に追加しない (例: 「無水カレー一食」だけの入力なら items は必ず1つ。 「ごはん」「バナナ」など few-shot 例にあった品目を勝手に混ぜない)
+- ★最優先ルール: name はユーザーが書いた料理名を文字通り使う。 1 文字も削らない / 短くしない
+  - 「無水カレー」→ "無水カレー" (○) / "カレー" (✗)
+  - 「冷やし中華」→ "冷やし中華" (○) / "中華" (✗)
+  - 「特製ラーメン」→ "特製ラーメン" (○) / "ラーメン" (✗)
+- 表記揺れの正規化は「ご飯/ライス → ごはん」程度の言い換えのみ可。 単語の追加や削除はしない
 - ユーザーが書いた数量はそのままの数値を使う (200g なら quantity=200, unit="g"。途中で桁を削らない)
 - 数量や単位は、それが書かれている品目だけに付ける (他の品目に勝手にコピーしない)
 - 単位は g / 個 / 本 / 杯 / 枚 / 切 / 缶 / 袋 / 人前 など自然なものを選ぶ
@@ -273,10 +295,20 @@ activity のルール:
 
 ユーザーへの返答はしない。JSONだけを返すこと。`
 
+// few-shot 例は最小限に絞る。 1B クラスの parser は long / detailed な例を
+// 短い入力でそのままコピペしてくる癖があるため、 「ごはん大盛りとバナナ1本と焼き魚」
+// のような多品目例は撤去。 代わりに「ユーザー入力をそのまま尊重する」ことを示す
+// 短い 1-2 品目の例だけ並べる。
 const FEW_SHOT_EXAMPLES = `以下の例を参考にしてください:
 
-入力: ごはん大盛りとバナナ1本と焼き魚
-出力: {"kind":"food","items":[{"name":"ごはん","quantity":1,"unit":"杯","portion":"大盛り","estimated_kcal":340},{"name":"バナナ","quantity":1,"unit":"本","estimated_kcal":86},{"name":"焼き魚","quantity":1,"unit":"切","estimated_kcal":150}]}
+入力: 鶏むね200g
+出力: {"kind":"food","items":[{"name":"鶏むね","quantity":200,"unit":"g","estimated_kcal":230}]}
+
+入力: カレー一食
+出力: {"kind":"food","items":[{"name":"カレー","quantity":1,"unit":"食","estimated_kcal":600}]}
+
+入力: 無水カレー一食
+出力: {"kind":"food","items":[{"name":"無水カレー","quantity":1,"unit":"食","estimated_kcal":600}]}
 
 入力: 体重68.5kg
 出力: {"kind":"weight","weight_kg":68.5}
@@ -289,6 +321,41 @@ const FEW_SHOT_EXAMPLES = `以下の例を参考にしてください:
 
 export const buildSystemPrompt = () =>
   `${PARSER_SYSTEM_PROMPT}\n${getRecordSchemaPrompt()}\n${FEW_SHOT_EXAMPLES}\n/no_think`
+
+// レシピモード専用 parser プロンプト。
+//   - kind は必ず "recipe" にする。 食事/体重/運動と判定したくなる入力でも recipe で返す。
+//   - ingredients は最低 1 つ、 servings は必須。
+//   - 「N食分」「N人前」が省略されていたら servings=1 として扱う (後段の UI で食数編集可能)。
+const RECIPE_PARSER_SYSTEM_PROMPT = `あなたはユーザーの自炊レシピ入力を構造化データに変換するパーサーです。
+ユーザーが日本語で書いた材料リストと食数を、 必ず {"kind":"recipe", ...} の形で JSON 出力してください。
+
+出力形式:
+{"kind":"recipe","name":"<料理名>","servings":<食数>,"ingredients":[{"name":..,"quantity":..,"unit":..}, ...]}
+
+ルール:
+- name は完成料理の名前 (例: 「無水カレー」「親子丼」)。 入力に明示されていない場合は短く要約する (「カレー」「煮物」など)。
+- servings は何食分作ったか。 「5食分」→ 5、 「3人前」→ 3。 「5食か6食」のように幅があれば小さい方 (5)。 省略されていたら 1。
+- ingredients の各要素は name / quantity / unit を持つ。
+  - quantity は数値 (「500g」→ 500、 「1缶」→ 1)。
+  - unit は g / 個 / 本 / 缶 / パック / 袋 / 大さじ / 小さじ / ml など、 入力から読み取れる自然な単位。
+- 入力が食事・体重・運動の記録に見えても、 必ず recipe として解釈すること。 たとえ材料が 1 つでも recipe を返す。
+- name に「カレー300kcal」のように kcal が併記されていてもそれは ingredient 側の補足情報なので、 quantity / unit には混ぜない (kcal は記録対象外)。
+
+ユーザーへの返答はしない。JSONだけを返すこと。`
+
+const RECIPE_FEW_SHOT_EXAMPLES = `以下の例を参考にしてください:
+
+入力: ひき肉500gと玉ねぎ3個とトマト缶1個で5食分のカレーを作った
+出力: {"kind":"recipe","name":"カレー","servings":5,"ingredients":[{"name":"ひき肉","quantity":500,"unit":"g"},{"name":"玉ねぎ","quantity":3,"unit":"個"},{"name":"トマト缶","quantity":1,"unit":"缶"}]}
+
+入力: 鶏もも300g、ごはん2合、卵4個で3食分の親子丼
+出力: {"kind":"recipe","name":"親子丼","servings":3,"ingredients":[{"name":"鶏もも","quantity":300,"unit":"g"},{"name":"ごはん","quantity":2,"unit":"合"},{"name":"卵","quantity":4,"unit":"個"}]}
+
+入力: ひきにく500g、カレールゥ300kcal、たまねぎ3個、なす5本、ピーマン5個、パプリカ2個、しめじ100g、エリンギ100g、えのき100g、ホールトマト1缶 で無水カレー作った。これで5食か6食分
+出力: {"kind":"recipe","name":"無水カレー","servings":5,"ingredients":[{"name":"ひき肉","quantity":500,"unit":"g"},{"name":"カレールゥ","quantity":1,"unit":"個"},{"name":"玉ねぎ","quantity":3,"unit":"個"},{"name":"なす","quantity":5,"unit":"本"},{"name":"ピーマン","quantity":5,"unit":"個"},{"name":"パプリカ","quantity":2,"unit":"個"},{"name":"しめじ","quantity":100,"unit":"g"},{"name":"エリンギ","quantity":100,"unit":"g"},{"name":"えのき","quantity":100,"unit":"g"},{"name":"ホールトマト","quantity":1,"unit":"缶"}]}`
+
+export const buildRecipeSystemPrompt = () =>
+  `${RECIPE_PARSER_SYSTEM_PROMPT}\n${getRecordSchemaPrompt()}\n${RECIPE_FEW_SHOT_EXAMPLES}\n/no_think`
 
 const makeDummyCardMessage = () => {
   const stamp = Date.now()
@@ -411,17 +478,61 @@ const stripThink = (text) => {
 //   { kind: 'activity', activity_name, duration_min?, distance_km? } — ③ で ActivityCard 描画予定
 //   { kind: 'unknown' }                                   — 食事/体重/運動いずれでもない
 //   { error }                                             — パース失敗
-const parseAndDispatch = async (content, idx) => {
+// 入力テキストと parser 出力の name を照合し、 ハルシネーション (入力に無い品目を
+// 勝手に追加) を弾く。 全角空白・スペース・「・」「-」などの記号は除いて比較する。
+//   - userText に name が部分一致 → keep
+//   - 入力に全く現れない (例: 入力「無水カレー一食」 に対して name「ごはん」) → drop
+//   - userText 未指定なら無効化 (チェックスキップ)
+const stripForMatch = (s) => String(s ?? '').replace(/[\s　・\-*・]/g, '').toLowerCase()
+const isItemNameInUserInput = (itemName, userText) => {
+  if (!userText) return true
+  const n = stripForMatch(itemName)
+  if (!n) return false
+  const u = stripForMatch(userText)
+  return u.includes(n)
+}
+
+const parseAndDispatch = async (content, idx, mode = 'log', userText = '') => {
   let parsed
   try {
     parsed = parseRecordOutput(content)
   } catch (e) {
     return { error: e?.message ?? String(e) }
   }
+  // レシピモードでは recipe 以外を受け付けない。 parser が誤って food などを
+  // 返してきた場合は強制的にエラー扱いにし、 RecipeCard が誤生成されないようにする。
+  if (mode === 'recipe' && parsed.kind !== 'recipe') {
+    return {
+      error:
+        '材料リストとして解釈できませんでした。 「ひき肉500g 玉ねぎ3個 で5食分のカレー」のような書き方で送ってください。',
+    }
+  }
+  // 記録モードでは recipe を受け付けない (RecipeCard はレシピモード専用)。
+  //   - 記録モードの parser prompt から recipe ルール / few-shot は撤去したが、
+  //     LFM2.5-JP 等のモデルは訓練バイアスで「カレー」のような既知レシピ名を
+  //     入力すると稀に kind='recipe' を返してしまう。
+  //   - そのまま渡すと RecipeCard が出てしまうので、 ユーザーは「カレーを 1 食食べた」
+  //     つもりだった前提で {name, quantity:1, unit:'食'} の food に降格する。
+  //   - 後段の food 経路で findBestFood が recipe マッチを拾い、 kcal_per_serving が
+  //     正しく反映される。 ingredients は破棄 (材料登録は recipe モード専用)。
+  if (mode === 'log' && parsed.kind === 'recipe') {
+    parsed = {
+      kind: 'food',
+      items: [{ name: parsed.name, quantity: 1, unit: '食' }],
+    }
+  }
   if (parsed.kind === 'food') {
     try {
+      // ハルシネーション除去: 入力に出てこない name の item を捨てる。
+      // ユーザーが「無水カレー一食」とだけ書いたのに parser が
+      // 「ごはん」「カレー」を返してきた場合、 「ごはん」は drop され
+      // 「カレー」だけ残る (FoodCard 上で「無水カレー」に編集可能)。
+      const filteredItems = parsed.items.filter((it) =>
+        isItemNameInUserInput(it?.name, userText),
+      )
+      const itemsToEnrich = filteredItems.length > 0 ? filteredItems : parsed.items
       const enriched = await Promise.all(
-        parsed.items.map(async (it, j) => {
+        itemsToEnrich.map(async (it, j) => {
           const matched = await findBestFood(it.name).catch((err) => {
             console.warn('[db] search failed for', it.name, err)
             return null
@@ -442,12 +553,53 @@ const parseAndDispatch = async (content, idx) => {
             matchedName: matched?.name ?? null,
             matchedFoodCode: matched?.food_code ?? null,
             matchedFoodId: matched?.id ?? null,
+            matchedKind: matched?.kind ?? null,
           }
         }),
       )
       return {
         kind: 'food',
         foodItems: enriched,
+        ...(parsed.truncated ? { truncated: true } : {}),
+      }
+    } catch (e) {
+      return { error: e?.message ?? String(e) }
+    }
+  }
+  if (parsed.kind === 'recipe') {
+    try {
+      const enriched = await Promise.all(
+        parsed.ingredients.map(async (ing, j) => {
+          const matched = await findBestFood(ing.name).catch((err) => {
+            console.warn('[db] recipe ingredient search failed for', ing.name, err)
+            return null
+          })
+          // recipe 内のレシピマッチは無視 (材料に他レシピを混ぜる用途はサポート外)。
+          // recipe マッチが来ても kcal_per_100g が null なので computeKcalFromMatch も null を返す。
+          const ingKcal = computeKcalFromMatch(matched, ing.quantity, ing.unit, ing.name)
+          return {
+            id: `recipe-${idx}-${j}`,
+            name: ing.name,
+            quantity: ing.quantity,
+            unit: ing.unit,
+            kcal: ingKcal,
+            kcalSource: ingKcal != null ? 'db' : null,
+            matchedFoodId:
+              matched && matched.kind !== 'recipe' ? matched.id : null,
+            matchedName:
+              matched && matched.kind !== 'recipe' ? matched.name : null,
+          }
+        }),
+      )
+      return {
+        kind: 'recipe',
+        recipe: {
+          name: parsed.name,
+          servings: parsed.servings,
+          ingredients: enriched,
+          saved: false,
+          savedRecipeId: null,
+        },
         ...(parsed.truncated ? { truncated: true } : {}),
       }
     } catch (e) {
@@ -538,7 +690,7 @@ export default function Chat() {
   // この間は全画面ローディングを出さず、チャット UI を維持してタイピングインジケータ
   // を表示する (写真認識の体験が「ローディング画面でブツ切れ」になるのを防ぐ)。
   const [parserReloading, setParserReloading] = useState(false)
-  const [mode, setMode] = useState('log') // 'log' | 'coach'
+  const [mode, setMode] = useState('log') // 'log' | 'coach' | 'recipe'
 
   // executorch が再 ready になった瞬間に parserReloading を落とす。
   useEffect(() => {
@@ -558,12 +710,27 @@ export default function Chat() {
   // 切り替えたあとも記録モード固有のカードが見えてしまうため、こちらも snapshot 化する。
   const logHistoryRef = useRef([])
   const coachHistoryRef = useRef([])
+  const recipeHistoryRef = useRef([])
   const logCardsRef = useRef({})
+  const recipeCardsRef = useRef({})
   const logLocalMessagesRef = useRef([])
   const coachLocalMessagesRef = useRef([])
+  const recipeLocalMessagesRef = useRef([])
   const [modeBusy, setModeBusy] = useState(false)
   const llmTimestampsRef = useRef([])
+  // configure useEffect が現サイクルで完了したか。
+  // useLLM が再 init される (Settings でモデル変更 等) と isReady=false → true と遷移し、
+  // この間 llm.messageHistory はモデル内部状態 ([] 等) になっている。
+  // 「isReady=true だが configure 未実行」のスキマで sync が走ると、 空の messageHistory を
+  // ref に書き戻してしまい、 続く configure が空の履歴を復元 → 履歴が消える。
+  // configure 実行完了でこのフラグを立て、 isReady が落ちたら倒すことで sync を gate する。
+  const configureDoneRef = useRef(false)
   const { showActionSheetWithOptions } = useActionSheet()
+
+  // useLLM 再 init が始まった瞬間に configureDone を倒す。
+  useEffect(() => {
+    if (!llm.isReady) configureDoneRef.current = false
+  }, [llm.isReady])
 
   // mode と llm.isReady の両方を依存にした configure。
   //   - 初回マウント: mode='log', isReady=true → parser systemPrompt を投入
@@ -579,7 +746,11 @@ export default function Chat() {
     ;(async () => {
       try {
         const restoreHist =
-          mode === 'log' ? logHistoryRef.current : coachHistoryRef.current
+          mode === 'log'
+            ? logHistoryRef.current
+            : mode === 'recipe'
+              ? recipeHistoryRef.current
+              : coachHistoryRef.current
         let systemPrompt
         let temperature
         if (mode === 'coach') {
@@ -587,6 +758,9 @@ export default function Chat() {
           if (cancelled) return
           systemPrompt = buildCoachSystemPrompt(context)
           temperature = 0.5
+        } else if (mode === 'recipe') {
+          systemPrompt = buildRecipeSystemPrompt()
+          temperature = 0.2
         } else {
           systemPrompt = buildSystemPrompt()
           temperature = 0.2
@@ -596,17 +770,24 @@ export default function Chat() {
           generationConfig: { temperature },
         })
         // インデックスが復元履歴に合わせて変わるので、processed/persisted セットも合わせる。
-        // 復元される assistant 行は既に処理 (log なら parse、coach なら DB 保存) 済み扱い。
+        //   log/recipe: カードが既に手元にある index だけ「処理済み」扱い。
+        //               カード生成が間に合わずモード切替が走ったケースで欠落していると、
+        //               全 index を processed にしてしまうと再パース不能になる。
+        //   coach: 復元される assistant 行は DB 保存済み扱い (二重保存防止)。
         const newProcessed = new Set()
         const newPersisted = new Set()
+        const cardsRef = mode === 'recipe' ? recipeCardsRef : logCardsRef
         restoreHist.forEach((m, i) => {
-          if (m.role === 'assistant') {
-            newProcessed.add(i)
+          if (m.role !== 'assistant') return
+          if (mode === 'coach') {
             newPersisted.add(i)
+          } else if (cardsRef.current[i] !== undefined) {
+            newProcessed.add(i)
           }
         })
         processedRef.current = newProcessed
         persistedCoachRef.current = newPersisted
+        configureDoneRef.current = true
       } catch (e) {
         console.warn('[chat] configure failed:', e)
       } finally {
@@ -618,6 +799,32 @@ export default function Chat() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [llm.isReady, mode])
+
+  // 現モードのスナップショット ref を継続同期する。
+  //   以前は handleSetMode 内でしか ref を更新していなかったため、 一度もモード切替を
+  //   していない状態で Settings からモデル変更 → useLLM 再 init が走ると、 configure
+  //   useEffect が空の logHistoryRef.current で initialMessageHistory を上書きしてしまい
+  //   会話履歴が消えるバグがあった。
+  //   configureDoneRef による gate で「isReady=true だが configure 未実行」のスキマで
+  //   空の messageHistory を書き戻すのを防いでいる。
+  useEffect(() => {
+    if (!llm.isReady) return
+    if (modeBusy) return
+    if (!configureDoneRef.current) return
+    const currentHist = llm.messageHistory.filter((m) => m.role !== 'system')
+    if (mode === 'log') {
+      logHistoryRef.current = currentHist
+      logCardsRef.current = llmCards
+      logLocalMessagesRef.current = localMessages
+    } else if (mode === 'recipe') {
+      recipeHistoryRef.current = currentHist
+      recipeCardsRef.current = llmCards
+      recipeLocalMessagesRef.current = localMessages
+    } else {
+      coachHistoryRef.current = currentHist
+      coachLocalMessagesRef.current = localMessages
+    }
+  }, [mode, llm.isReady, llm.messageHistory, llmCards, localMessages, modeBusy])
 
   // Parse any complete assistant messages that haven't been parsed yet
   // (uses processedRef to guard against re-processing in the async window)
@@ -641,7 +848,7 @@ export default function Chat() {
         console.log('[model]', activeModel.id)
         if (userMsg) console.log('[USER]', userMsg)
         console.log('[LLM raw]', m.content)
-        const result = await parseAndDispatch(m.content, idx)
+        const result = await parseAndDispatch(m.content, idx, mode, userMsg ?? '')
         if (result.kind === 'food' && result.foodItems) {
           console.log('[parsed+enriched]', JSON.stringify(result.foodItems, null, 2))
           try {
@@ -657,6 +864,9 @@ export default function Chat() {
           } catch (e) {
             console.warn('[food_log] insert failed:', e?.message ?? e)
           }
+        } else if (result.kind === 'recipe' && result.recipe) {
+          console.log('[parsed recipe]', JSON.stringify(result.recipe, null, 2))
+          // recipe は保存ボタン押下時に DB へ書く。 ここでは llmCards に置くだけ。
         } else if (result.kind === 'weight') {
           console.log('[parsed weight]', result.weight_kg, 'kg (② で記録 UI を実装予定)')
         } else if (result.kind === 'activity') {
@@ -747,6 +957,15 @@ export default function Chat() {
           foodItems: card.foodItems,
           truncated: card.truncated ?? false,
         })
+      } else if (card?.kind === 'recipe' && card.recipe) {
+        items.push({
+          _id: `h-${i}`,
+          text: '',
+          createdAt,
+          user: ASSISTANT,
+          recipe: card.recipe,
+          truncated: card.truncated ?? false,
+        })
       } else if (card?.kind === 'weight') {
         items.push({
           _id: `h-${i}`,
@@ -785,9 +1004,16 @@ export default function Chat() {
           isError: true,
         })
       } else if (card?.error) {
+        // recipe モードでは parseRecordOutput / parseRecipeKind の内訳メッセージが
+        // そのまま「材料が無い」「食数が抽出できない」など実用的なヒントになるので
+        // 直接見せる。 log モードは parser 内部エラーが分かりにくいので generic に倒す。
+        const errText =
+          mode === 'recipe'
+            ? card.error
+            : '記録を抽出できませんでした。もう少し具体的に書いてみてください。'
         items.push({
           _id: `h-${i}`,
-          text: '記録を抽出できませんでした。もう少し具体的に書いてみてください。',
+          text: errText,
           createdAt,
           user: ASSISTANT,
           isError: true,
@@ -811,6 +1037,11 @@ export default function Chat() {
       // swap 中（isReady=false）に切替を許してしまうと configure useEffect が
       // 2 回走って後の方が古い履歴で上書きする恐れがあるため、ready 前は弾く。
       if (!llm.isReady) return
+      // VLM / OCR が走っている最中の切替は、 進行中の async 完了時の
+      // setLocalMessages が新モード側の localMessages に混ざる原因になる。
+      // parserReloading=true は VLM 直後の executorch 再ロード待ちで isReady が
+      // 一瞬 true に戻る前のスキマを塞ぐため、 こちらでも弾く。
+      if (visionBusy || ocrBusy || parserReloading) return
       setModeBusy(true)
       try {
         const currentHist = llm.messageHistory.filter((m) => m.role !== 'system')
@@ -819,18 +1050,32 @@ export default function Chat() {
           logHistoryRef.current = currentHist
           logCardsRef.current = llmCards
           logLocalMessagesRef.current = localMessages
+        } else if (mode === 'recipe') {
+          recipeHistoryRef.current = currentHist
+          recipeCardsRef.current = llmCards
+          recipeLocalMessagesRef.current = localMessages
         } else {
           coachHistoryRef.current = currentHist
           coachLocalMessagesRef.current = localMessages
         }
-        const restoreCards = newMode === 'log' ? logCardsRef.current : {}
+        const restoreCards =
+          newMode === 'log'
+            ? logCardsRef.current
+            : newMode === 'recipe'
+              ? recipeCardsRef.current
+              : {}
         const restoreLocalMessages =
-          newMode === 'log' ? logLocalMessagesRef.current : coachLocalMessagesRef.current
+          newMode === 'log'
+            ? logLocalMessagesRef.current
+            : newMode === 'recipe'
+              ? recipeLocalMessagesRef.current
+              : coachLocalMessagesRef.current
         setLlmCards(restoreCards)
         setLocalMessages(restoreLocalMessages)
         setInputText('')
         setMode(newMode)
         // ロール切替 → Provider 側で必要ならモデル swap
+        // recipe モードは parser ロール (kcal 計算のため軽量モデルで十分)
         const targetRole = newMode === 'coach' ? 'coach' : 'parser'
         if (currentRole !== targetRole) {
           await setCurrentRole(targetRole)
@@ -841,7 +1086,18 @@ export default function Chat() {
         setModeBusy(false)
       }
     },
-    [mode, llm, llmCards, localMessages, modeBusy, currentRole, setCurrentRole],
+    [
+      mode,
+      llm,
+      llmCards,
+      localMessages,
+      modeBusy,
+      currentRole,
+      setCurrentRole,
+      visionBusy,
+      ocrBusy,
+      parserReloading,
+    ],
   )
 
   const onSend = useCallback(
@@ -1057,6 +1313,7 @@ export default function Chat() {
               matchedName: matched?.name ?? null,
               matchedFoodCode: matched?.food_code ?? null,
               matchedFoodId: matched?.id ?? null,
+              matchedKind: matched?.kind ?? null,
             }
           }),
         )
@@ -1252,6 +1509,7 @@ export default function Chat() {
       let nextMatchedId = before.matchedFoodId ?? null
       let nextMatchedName = before.matchedName ?? null
       let nextMatchedCode = before.matchedFoodCode ?? null
+      let nextMatchedKind = before.matchedKind ?? null
       let nextPortion = before.portion ?? 'normal'
       let nextKcalSource = before.kcalSource ?? null
 
@@ -1260,15 +1518,23 @@ export default function Chat() {
         if (!trimmed || trimmed === before.name) {
           // 空 or 変更なしなら name の更新はスキップ。portion の更新は続行する。
         } else {
-          const matched = await findBestFood(trimmed).catch((e) => {
-            console.warn('[db] foodcard edit search failed:', e?.message ?? e)
-            return null
-          })
+          // updates.matchedFood が来ていればそれを使う (FoodNameInput のサジェスト
+          // タップ経路)。 ユーザーが選んだ行 (Slism 完成料理など) を尊重し、
+          // findBestFood の top-1 が別 food (mext 素材) を返して serving フォールバック
+          // が効かなくなる事故を避ける。 手入力で変えた経路では matchedFood は無いので
+          // 従来通り findBestFood で当てに行く。
+          const matched = updates.matchedFood
+            ? updates.matchedFood
+            : await findBestFood(trimmed).catch((e) => {
+                console.warn('[db] foodcard edit search failed:', e?.message ?? e)
+                return null
+              })
           nextName = trimmed
           nextBaseKcal = computeKcalFromMatch(matched, before.quantity, before.unit, trimmed)
           nextMatchedId = matched?.id ?? null
           nextMatchedName = matched?.name ?? null
           nextMatchedCode = matched?.food_code ?? null
+          nextMatchedKind = matched?.kind ?? null
           // 名前が変わったら元の LLM 推定値は破棄。 DB ヒットしたら 'db'、しなければ null。
           nextKcalSource = nextBaseKcal != null ? 'db' : null
           patch.name = nextName
@@ -1276,6 +1542,7 @@ export default function Chat() {
           patch.matchedFoodId = nextMatchedId
           patch.matchedName = nextMatchedName
           patch.matchedFoodCode = nextMatchedCode
+          patch.matchedKind = nextMatchedKind
           patch.kcalSource = nextKcalSource
         }
       }
@@ -1294,6 +1561,7 @@ export default function Chat() {
             portion: nextPortion,
             baseKcal: nextBaseKcal,
             matchedFoodId: nextMatchedId,
+            matchedKind: nextMatchedKind,
             kcalSource: nextKcalSource,
           })
         } catch (e) {
@@ -1429,6 +1697,219 @@ export default function Chat() {
     [estimatingMessageId, llm, currentRole, setCurrentRole, applyFoodItemPatch],
   )
 
+  // RecipeCard 操作のヘルパ。 llmCards[idx].recipe を直接書き換える。
+  // recipe カードは log モードでのみ生成されるので messageId は常に 'h-<idx>'。
+  const applyRecipePatch = useCallback((messageId, recipePatch) => {
+    if (!messageId?.startsWith('h-')) return
+    const idx = Number(messageId.slice(2))
+    setLlmCards((prev) => {
+      const entry = prev[idx]
+      if (!entry?.recipe) return prev
+      return {
+        ...prev,
+        [idx]: { ...entry, recipe: { ...entry.recipe, ...recipePatch } },
+      }
+    })
+  }, [])
+
+  const updateRecipeServings = useCallback(
+    (messageId, n) => {
+      applyRecipePatch(messageId, { servings: n })
+    },
+    [applyRecipePatch],
+  )
+
+  // 材料の数量を編集したら、 旧 kcal を新数量で線形スケールする。
+  //   kcal = kcal_per_X * quantity の形なので比例計算で正しい。
+  //   元 kcal=null (DB マッチなし) なら null のまま (「AI 推定」ボタンで補完)。
+  const updateRecipeIngredientQuantity = useCallback(
+    (messageId, ingId, qtyStr) => {
+      const next = Number(qtyStr)
+      if (!Number.isFinite(next) || next <= 0) return
+      if (!messageId?.startsWith('h-')) return
+      const idx = Number(messageId.slice(2))
+      setLlmCards((prev) => {
+        const entry = prev[idx]
+        if (!entry?.recipe) return prev
+        const ings = entry.recipe.ingredients.map((ing) => {
+          if (ing.id !== ingId) return ing
+          if (ing.quantity === next) return ing
+          const scaled =
+            ing.kcal != null && ing.quantity > 0
+              ? Math.round((ing.kcal * next) / ing.quantity)
+              : ing.kcal
+          return { ...ing, quantity: next, kcal: scaled }
+        })
+        return {
+          ...prev,
+          [idx]: { ...entry, recipe: { ...entry.recipe, ingredients: ings } },
+        }
+      })
+    },
+    [],
+  )
+
+  const deleteRecipeIngredient = useCallback((messageId, ingId) => {
+    if (!messageId?.startsWith('h-')) return
+    const idx = Number(messageId.slice(2))
+    setLlmCards((prev) => {
+      const entry = prev[idx]
+      if (!entry?.recipe) return prev
+      const ings = entry.recipe.ingredients.filter((ing) => ing.id !== ingId)
+      return {
+        ...prev,
+        [idx]: { ...entry, recipe: { ...entry.recipe, ingredients: ings } },
+      }
+    })
+  }, [])
+
+  // RecipeCard の「保存」ボタンハンドラ。 db/recipes.saveRecipe へ書き込み、
+  // llmCards のエントリを saved=true にする。 以後の再利用は findBestFood が拾う。
+  const [savingRecipeMessageId, setSavingRecipeMessageId] = useState(null)
+  const handleSaveRecipe = useCallback(
+    async (messageId) => {
+      if (savingRecipeMessageId) return
+      if (!messageId?.startsWith('h-')) return
+      const idx = Number(messageId.slice(2))
+      const entry = llmCardsRef.current[idx]
+      const recipe = entry?.recipe
+      if (!recipe || recipe.saved) return
+      const ings = recipe.ingredients ?? []
+      if (ings.length === 0) {
+        Alert.alert('保存できません', '材料が空です。')
+        return
+      }
+      if (ings.some((ing) => ing.kcal == null)) {
+        Alert.alert('保存できません', '「— kcal」の材料を AI 推定か手で確定してください。')
+        return
+      }
+      const totalKcal = ings.reduce((sum, ing) => sum + (ing.kcal ?? 0), 0)
+      setSavingRecipeMessageId(messageId)
+      try {
+        const recipeId = await saveRecipe({
+          name: recipe.name,
+          servings: recipe.servings,
+          totalKcal,
+          ingredients: ings.map((ing) => ({
+            name: ing.name,
+            quantity: ing.quantity,
+            unit: ing.unit,
+            matchedFoodId: ing.matchedFoodId ?? null,
+            kcal: ing.kcal,
+            kcalSource: ing.kcalSource ?? null,
+          })),
+        })
+        applyRecipePatch(messageId, { saved: true, savedRecipeId: recipeId })
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+      } catch (e) {
+        console.warn('[recipe] save failed:', e?.message ?? e)
+        Alert.alert('保存に失敗', e?.message ?? String(e))
+      } finally {
+        setSavingRecipeMessageId(null)
+      }
+    },
+    [savingRecipeMessageId, applyRecipePatch],
+  )
+
+  // RecipeCard の「AI 推定」ボタン。 ingredients の kcal=null を埋める。
+  // handleEstimateMissingKcal とほぼ同じだが、 書き戻し先が foodItems ではなく
+  // recipe.ingredients。
+  const handleEstimateMissingRecipeKcal = useCallback(
+    async (messageId) => {
+      if (estimatingMessageId) return
+      if (!llm || !llm.isReady || llm.isGenerating) {
+        Alert.alert('AI モデルが準備中', '少し待ってから「AI推定」を押してください。')
+        return
+      }
+      if (!messageId?.startsWith('h-')) return
+      const idx = Number(messageId.slice(2))
+      const entry = llmCardsRef.current[idx]
+      const ings = entry?.recipe?.ingredients ?? []
+      const targets = ings.filter((ing) => ing.kcal == null && ing.name?.trim())
+      if (targets.length === 0) return
+
+      const originalRole = currentRole
+      const needSwap = originalRole !== 'coach'
+      setEstimatingMessageId(messageId)
+      setEstimatingPhase(needSwap ? 'swapping' : 'generating')
+
+      try {
+        if (needSwap) {
+          await setCurrentRole('coach')
+          const phase1Start = Date.now()
+          let swapStarted = false
+          while (Date.now() - phase1Start < 5_000) {
+            if (!llmRef.current?.isReady) {
+              swapStarted = true
+              break
+            }
+            await new Promise((resolve) => setTimeout(resolve, 50))
+          }
+          if (swapStarted) {
+            const phase2Start = Date.now()
+            while (Date.now() - phase2Start < 30_000) {
+              const cur = llmRef.current
+              if (cur?.isReady && !cur?.isGenerating) break
+              await new Promise((resolve) => setTimeout(resolve, 200))
+            }
+            if (!llmRef.current?.isReady) {
+              throw new Error('コーチモデルのロードがタイムアウトしました')
+            }
+          }
+          setEstimatingPhase('generating')
+        }
+
+        try {
+          llmRef.current?.configure({
+            generationConfig: { temperature: 0.1, repetitionPenalty: 1.1 },
+          })
+        } catch (e) {
+          console.warn('[recipe ai kcal] configure (coach) failed:', e?.message ?? e)
+        }
+
+        await estimateKcalBatch(
+          llmRef.current,
+          targets.map((ing) => ({
+            id: ing.id,
+            name: ing.name,
+            quantity: ing.quantity,
+            unit: ing.unit,
+          })),
+          {
+            modelLabel: coachModel?.id ?? 'coach',
+            onItemDone: (it, result) => {
+              if (!result.ok) return
+              setLlmCards((prev) => {
+                const e2 = prev[idx]
+                if (!e2?.recipe) return prev
+                const next = e2.recipe.ingredients.map((ing) =>
+                  ing.id === it.id
+                    ? { ...ing, kcal: result.kcal, kcalSource: 'llm_estimate' }
+                    : ing,
+                )
+                return {
+                  ...prev,
+                  [idx]: { ...e2, recipe: { ...e2.recipe, ingredients: next } },
+                }
+              })
+            },
+          },
+        )
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+      } catch (e) {
+        console.warn('[recipe ai kcal batch] failed:', e?.message ?? e)
+        Alert.alert('AI推定に失敗', e?.message ?? String(e))
+      } finally {
+        if (needSwap) {
+          setCurrentRole(originalRole).catch(() => {})
+        }
+        setEstimatingMessageId(null)
+        setEstimatingPhase(null)
+      }
+    },
+    [estimatingMessageId, llm, currentRole, setCurrentRole, coachModel],
+  )
+
   // FoodCard の行削除ハンドラ。ローカル state から除去し、保存済みなら food_log も DELETE。
   const deleteFoodItem = useCallback(
     async (messageId, itemId) => {
@@ -1452,8 +1933,46 @@ export default function Chat() {
   //   - 現在モードの snapshot ref のみ空にする (もう一方のモードはタブ切替時に温存)
   //   - DB に保存済みの food_log / weight_log / energy_log / chat_messages は触らない
   //     (= 画面の「見え方」だけクリア。記録はそのまま残る)
+  // 1.5 秒で消えるトースト ("コピーしました" 表示用)。 null は非表示。
+  const [toast, setToast] = useState(null)
+  const toastTimerRef = useRef(null)
+  const showToast = useCallback((text) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    setToast(text)
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null)
+      toastTimerRef.current = null
+    }, 1500)
+  }, [])
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+  }, [])
+
+  // チャットバブル長押しで本文をクリップボードへコピー。 カード (FoodCard/RecipeCard 等)
+  // は独自の TouchableOpacity が touch を握っているので発火しない (= デフォルト Bubble の
+  // テキスト/エラー/コーチ応答にのみ効く)。
+  const handleCopyBubble = useCallback(
+    async (text) => {
+      const t = String(text ?? '').trim()
+      if (!t) return
+      try {
+        await Clipboard.setStringAsync(t)
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
+        showToast('コピーしました')
+      } catch (e) {
+        console.warn('[chat] clipboard copy failed:', e?.message ?? e)
+      }
+    },
+    [showToast],
+  )
+  const renderMessageText = useMemo(
+    () => makeRenderMessageText(handleCopyBubble),
+    [handleCopyBubble],
+  )
+
   const handleClearHistory = useCallback(() => {
     if (llm.isGenerating || modeBusy) return
+    if (visionBusy || ocrBusy || parserReloading) return
     Alert.alert(
       'チャット履歴をクリア',
       '画面に表示中の会話履歴をクリアします。記録済みの食事・体重・運動のデータは消えません。',
@@ -1468,6 +1987,10 @@ export default function Chat() {
                 logHistoryRef.current = []
                 logCardsRef.current = {}
                 logLocalMessagesRef.current = []
+              } else if (mode === 'recipe') {
+                recipeHistoryRef.current = []
+                recipeCardsRef.current = {}
+                recipeLocalMessagesRef.current = []
               } else {
                 coachHistoryRef.current = []
                 coachLocalMessagesRef.current = []
@@ -1484,6 +2007,9 @@ export default function Chat() {
                 const context = await buildCoachingContext()
                 systemPrompt = buildCoachSystemPrompt(context)
                 temperature = 0.5
+              } else if (mode === 'recipe') {
+                systemPrompt = buildRecipeSystemPrompt()
+                temperature = 0.2
               } else {
                 systemPrompt = buildSystemPrompt()
                 temperature = 0.2
@@ -1500,7 +2026,7 @@ export default function Chat() {
         },
       ],
     )
-  }, [mode, llm, modeBusy])
+  }, [mode, llm, modeBusy, visionBusy, ocrBusy, parserReloading])
 
   // テキスト経由の体重カードの「記録する」ハンドラ。
   //   weight_log に source='text' で1行入れ、llmCards のエントリに saved 状態をマージする。
@@ -1554,6 +2080,7 @@ export default function Chat() {
             portion: 'normal',
             baseKcal,
             matchedFoodId: matched?.id ?? null,
+            matchedKind: matched?.kind ?? null,
             kcalSource,
           },
         ],
@@ -1663,6 +2190,21 @@ export default function Chat() {
           />
         )
       }
+      if (current?.recipe) {
+        return (
+          <RecipeCard
+            message={current}
+            onChangeServings={updateRecipeServings}
+            onChangeIngredientQuantity={updateRecipeIngredientQuantity}
+            onDeleteIngredient={deleteRecipeIngredient}
+            onSave={handleSaveRecipe}
+            onEstimateMissing={handleEstimateMissingRecipeKcal}
+            estimating={estimatingMessageId === current._id}
+            estimatingPhase={estimatingMessageId === current._id ? estimatingPhase : null}
+            saving={savingRecipeMessageId === current._id}
+          />
+        )
+      }
       if (current?.labelRecord) {
         return <LabelRecordCard message={current} onSave={handleLabelSave} />
       }
@@ -1675,9 +2217,15 @@ export default function Chat() {
       if (current?.unknownOcr) {
         return <UnknownOcrCard message={current} onSave={handleUnknownOcrSave} />
       }
-      return <Bubble {...props} renderMessageText={renderAssistantMarkdown} />
+      return (
+        <Bubble
+          {...props}
+          renderMessageText={renderMessageText}
+        />
+      )
     },
     [
+      renderMessageText,
       updateFoodItem,
       deleteFoodItem,
       handleEstimateMissingKcal,
@@ -1687,6 +2235,12 @@ export default function Chat() {
       handleWeightSave,
       handleActivitySave,
       handleUnknownOcrSave,
+      updateRecipeServings,
+      updateRecipeIngredientQuantity,
+      deleteRecipeIngredient,
+      handleSaveRecipe,
+      handleEstimateMissingRecipeKcal,
+      savingRecipeMessageId,
     ],
   )
 
@@ -1700,6 +2254,38 @@ export default function Chat() {
             </Text>
             <Text style={styles.captionText}>下の質問例から選ぶか、自由に入力してください。</Text>
             <Text style={styles.captionText}>※ 医療的な判断はしません。</Text>
+          </View>
+        )
+      }
+      if (mode === 'recipe') {
+        return (
+          <View style={styles.emptyWrap}>
+            <Text style={styles.emptyText}>
+              まとめて作った料理を登録できます。 材料リストと食数を送ると、 1食あたりの kcal を算出してマスタに保存します。
+            </Text>
+
+            <Text style={styles.sectionLabel}>🥘 一行で書く</Text>
+            <View style={styles.exampleBlock}>
+              <Text style={styles.exampleLine}>・ひき肉500gと玉ねぎ3個とトマト缶1個で5食分のカレー</Text>
+              <Text style={styles.exampleLine}>・鶏もも300g、ごはん2合、卵4個で3食分の親子丼</Text>
+            </View>
+
+            <Text style={styles.sectionLabel}>📝 箇条書きでもOK</Text>
+            <View style={styles.exampleBlock}>
+              <Text style={styles.exampleLine}>・ひきにく500g</Text>
+              <Text style={styles.exampleLine}>・カレールゥ300kcal</Text>
+              <Text style={styles.exampleLine}>・たまねぎ3個</Text>
+              <Text style={styles.exampleLine}>・なす5本</Text>
+              <Text style={styles.exampleLine}>...</Text>
+              <Text style={styles.exampleLine}>で無水カレー作った。これで5食か6食分</Text>
+            </View>
+            <Text style={styles.captionText}>
+              「N食か N食分」のように幅があれば少ない方が食数に採用されます (後で編集可)。
+            </Text>
+
+            <Text style={styles.captionText}>
+              保存後は記録モードで「カレー1食」のように呼び出して食事ログに記録できます。
+            </Text>
           </View>
         )
       }
@@ -1738,7 +2324,7 @@ export default function Chat() {
             左下のカメラから、食品ラベル・体重計・フィットネスアプリのスクショを OCR で読み取れます。
           </Text>
 
-          <Text style={styles.emptyHintDev}>（開発用）`/card` でサンプル食品カードを表示</Text>
+          <Text style={styles.emptyHintDev}>`/card` でサンプル食品カードを表示</Text>
         </View>
       )
     },
@@ -1823,12 +2409,18 @@ export default function Chat() {
         onSend={onSend}
         user={USER}
         text={inputText}
-        placeholder={mode === 'coach' ? 'コーチに質問する（例: 今週どうだった？）' : '食事・体重・運動を入力'}
+        placeholder={
+          mode === 'coach'
+            ? 'コーチに質問する（例: 今週どうだった？）'
+            : mode === 'recipe'
+              ? '材料リストと食数を入力（例: ひき肉500g 玉ねぎ3個 で5食分のカレー）'
+              : '食事・体重・運動を入力'
+        }
         isTyping={llm.isGenerating || parserReloading}
         minComposerHeight={48}
         renderMessage={renderWideMessage}
         renderBubble={renderBubble}
-        renderActions={mode === 'coach' ? undefined : renderActions}
+        renderActions={mode === 'log' ? renderActions : undefined}
         renderAvatar={null}
         renderChatEmpty={renderChatEmpty}
         renderInputToolbar={(props) => (
@@ -1852,59 +2444,92 @@ export default function Chat() {
               </ScrollView>
             )}
             <View style={styles.modeBar}>
-              <TouchableOpacity
-                onPress={() => handleSetMode('log')}
-                disabled={modeBusy || llm.isGenerating}
-                style={[
-                  styles.modeBtn,
-                  mode === 'log' && styles.modeBtnActive,
-                  (modeBusy || llm.isGenerating) && styles.modeBtnDisabled,
-                ]}
-                activeOpacity={0.7}
-              >
-                <FontIcon
-                  name="pencil"
-                  size={12}
-                  color={mode === 'log' ? colors.white : colors.darkPurple}
-                />
-                <Text style={[styles.modeBtnText, mode === 'log' && styles.modeBtnTextActive]}>
-                  記録
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => handleSetMode('coach')}
-                disabled={modeBusy || llm.isGenerating}
-                style={[
-                  styles.modeBtn,
-                  mode === 'coach' && styles.modeBtnActive,
-                  (modeBusy || llm.isGenerating) && styles.modeBtnDisabled,
-                ]}
-                activeOpacity={0.7}
-              >
-                <FontIcon
-                  name="comments-o"
-                  size={12}
-                  color={mode === 'coach' ? colors.white : colors.darkPurple}
-                />
-                <Text style={[styles.modeBtnText, mode === 'coach' && styles.modeBtnTextActive]}>
-                  コーチに聞く
-                </Text>
-              </TouchableOpacity>
-              {modeBusy && (
-                <ActivityIndicator size="small" color={colors.lightPurple} style={{ marginLeft: 8 }} />
-              )}
-              <TouchableOpacity
-                onPress={handleClearHistory}
-                disabled={modeBusy || llm.isGenerating || messages.length === 0}
-                style={[
-                  styles.clearBtn,
-                  (modeBusy || llm.isGenerating || messages.length === 0) && styles.modeBtnDisabled,
-                ]}
-                activeOpacity={0.7}
-                accessibilityLabel="チャット履歴をクリア"
-              >
-                <FontIcon name="trash-o" size={14} color={colors.darkPurple} />
-              </TouchableOpacity>
+              {(() => {
+                const modeSwitchDisabled =
+                  modeBusy || llm.isGenerating || visionBusy || ocrBusy || parserReloading
+                const clearDisabled = modeSwitchDisabled || messages.length === 0
+                return (
+                  <>
+                    <TouchableOpacity
+                      onPress={() => handleSetMode('log')}
+                      disabled={modeSwitchDisabled}
+                      style={[
+                        styles.modeBtn,
+                        mode === 'log' && styles.modeBtnActive,
+                        modeSwitchDisabled && styles.modeBtnDisabled,
+                      ]}
+                      activeOpacity={0.7}
+                    >
+                      <FontIcon
+                        name="pencil"
+                        size={12}
+                        color={mode === 'log' ? colors.white : colors.darkPurple}
+                      />
+                      <Text style={[styles.modeBtnText, mode === 'log' && styles.modeBtnTextActive]}>
+                        記録
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => handleSetMode('recipe')}
+                      disabled={modeSwitchDisabled}
+                      style={[
+                        styles.modeBtn,
+                        mode === 'recipe' && styles.modeBtnActive,
+                        modeSwitchDisabled && styles.modeBtnDisabled,
+                      ]}
+                      activeOpacity={0.7}
+                    >
+                      <FontIcon
+                        name="cutlery"
+                        size={12}
+                        color={mode === 'recipe' ? colors.white : colors.darkPurple}
+                      />
+                      <Text
+                        style={[styles.modeBtnText, mode === 'recipe' && styles.modeBtnTextActive]}
+                      >
+                        レシピ
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => handleSetMode('coach')}
+                      disabled={modeSwitchDisabled}
+                      style={[
+                        styles.modeBtn,
+                        mode === 'coach' && styles.modeBtnActive,
+                        modeSwitchDisabled && styles.modeBtnDisabled,
+                      ]}
+                      activeOpacity={0.7}
+                    >
+                      <FontIcon
+                        name="comments-o"
+                        size={12}
+                        color={mode === 'coach' ? colors.white : colors.darkPurple}
+                      />
+                      <Text
+                        style={[styles.modeBtnText, mode === 'coach' && styles.modeBtnTextActive]}
+                      >
+                        コーチに聞く
+                      </Text>
+                    </TouchableOpacity>
+                    {modeBusy && (
+                      <ActivityIndicator
+                        size="small"
+                        color={colors.lightPurple}
+                        style={{ marginLeft: 8 }}
+                      />
+                    )}
+                    <TouchableOpacity
+                      onPress={handleClearHistory}
+                      disabled={clearDisabled}
+                      style={[styles.clearBtn, clearDisabled && styles.modeBtnDisabled]}
+                      activeOpacity={0.7}
+                      accessibilityLabel="チャット履歴をクリア"
+                    >
+                      <FontIcon name="trash-o" size={14} color={colors.darkPurple} />
+                    </TouchableOpacity>
+                  </>
+                )
+              })()}
             </View>
             <InputToolbar
               {...props}
@@ -1931,6 +2556,11 @@ export default function Chat() {
         }}
         alwaysShowSend
       />
+      {toast ? (
+        <View pointerEvents="none" style={styles.toastWrap}>
+          <Text style={styles.toastText}>{toast}</Text>
+        </View>
+      ) : null}
     </View>
   )
 }
@@ -2037,6 +2667,20 @@ const styles = StyleSheet.create({
   },
   sendCircleDisabled: {
     backgroundColor: '#dcd9ec',
+  },
+  toastWrap: {
+    position: 'absolute',
+    bottom: 120,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 16,
+    backgroundColor: 'rgba(40, 30, 60, 0.9)',
+  },
+  toastText: {
+    color: colors.white,
+    fontSize: fontSize.small,
+    fontWeight: '600',
   },
   modeBtnDisabled: {
     opacity: 0.5,

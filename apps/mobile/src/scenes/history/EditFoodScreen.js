@@ -61,6 +61,12 @@ export default function EditFoodScreen() {
   // 直近の再計算結果（プレビュー用）。null = 再計算不能（マッチなし等）
   const [recomputed, setRecomputed] = useState(null)
   const recomputeSeqRef = useRef(0)
+  // FoodNameInput のサジェストでユーザーが選んだ食品 (foods 行) を覚える。
+  //   recompute で findBestFood の top-1 を引くと、 ユーザーが選んだ下位サジェスト
+  //   (Slism の完成料理など) と別 food が拾われて kcal が空になる事故を防ぐため、
+  //   選択後の最初の recompute はこちらを優先利用する。 手入力で名前が変わったら
+  //   ref をクリアして findBestFood に戻す。
+  const pickedFoodRef = useRef(null)
   // AI 推定の進行中フラグと最後のエラー (UI ヒント用)
   const [aiBusy, setAiBusy] = useState(false)
   const [aiPhase, setAiPhase] = useState(null) // 'swapping' | 'generating' | null
@@ -112,7 +118,13 @@ export default function EditFoodScreen() {
     const seq = ++recomputeSeqRef.current
     const handle = setTimeout(async () => {
       try {
-        const matched = await findBestFood(name.trim())
+        // サジェストで選んだ食品名と一致するなら、 その food をそのまま使う。
+        // 違ったら findBestFood の top-1 にフォールバック。
+        const picked = pickedFoodRef.current
+        const matched =
+          picked && picked.name === name.trim()
+            ? picked
+            : await findBestFood(name.trim())
         const baseKcal = computeKcalFromMatch(matched, qty, unit.trim(), name.trim())
         if (seq !== recomputeSeqRef.current) return // 古い結果は破棄
         if (baseKcal == null) {
@@ -254,9 +266,18 @@ export default function EditFoodScreen() {
         <Field label="食品名">
           <FoodNameInput
             value={name}
-            onChangeText={setName}
-            onCommit={(picked, _food, suggestedUnit) => {
+            onChangeText={(v) => {
+              setName(v)
+              // サジェスト確定後に手で名前を変えたら、 覚えていた食品行を捨てて
+              // 通常の findBestFood に戻す。
+              if (pickedFoodRef.current && pickedFoodRef.current.name !== v) {
+                pickedFoodRef.current = null
+              }
+            }}
+            onCommit={(picked, food, suggestedUnit) => {
               setName(picked)
+              // サジェストで選ばれたまさにその food を recompute で優先利用する。
+              pickedFoodRef.current = food ?? null
               // 既定単位が引けたら一緒に上書き (タップ時のみ)。手で打った単位は尊重する。
               if (suggestedUnit) setUnit(suggestedUnit)
             }}

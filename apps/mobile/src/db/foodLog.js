@@ -6,8 +6,9 @@ export const portionFactor = (p) => PORTION_FACTORS[p] ?? 1.0
 // items 配列を food_log にまとめて INSERT する。
 //
 // 1件あたりの item は:
-//   { name, quantity, unit, portion, baseKcal, matchedFoodId? }
+//   { name, quantity, unit, portion, baseKcal, matchedFoodId?, matchedKind? }
 // baseKcal は「並 (factor=1.0)」相当の値。実際の保存値は portion factor を掛けて算出する。
+// matchedKind は 'food' (foods 行) または 'recipe' (recipes 行)。 未指定なら 'food'。
 //
 // 戻り値: 挿入された food_log.id の配列（呼び元で後の UPDATE/DELETE に使える）
 export const insertFoodLogItems = async (items, options = {}) => {
@@ -31,6 +32,8 @@ export const insertFoodLogItems = async (items, options = {}) => {
       for (const item of items) {
         const factor = portionFactor(item.portion)
         const kcal = item.baseKcal != null ? Math.round(item.baseKcal * factor) : null
+        const refKind =
+          item.matchedFoodId != null ? (item.matchedKind ?? 'food') : null
         // eslint-disable-next-line no-await-in-loop
         const res = await stmt.executeAsync([
           eatenAt,
@@ -41,7 +44,7 @@ export const insertFoodLogItems = async (items, options = {}) => {
           item.portion ?? 'normal',
           kcal,
           item.matchedFoodId ?? null,
-          item.matchedFoodId != null ? 'food' : null,
+          refKind,
           source,
           item.kcalSource ?? null,
         ])
@@ -139,7 +142,9 @@ export const updateFoodLogItem = async (foodLogId, fields) => {
     sets.push('ref_food_id = ?')
     params.push(fields.matchedFoodId ?? null)
     sets.push('ref_kind = ?')
-    params.push(fields.matchedFoodId != null ? 'food' : null)
+    const refKind =
+      fields.matchedFoodId != null ? (fields.matchedKind ?? 'food') : null
+    params.push(refKind)
   }
   if ('kcalSource' in fields) {
     sets.push('kcal_source = ?')

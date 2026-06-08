@@ -53,6 +53,13 @@ export default function SettingsHome() {
           />
           <View style={styles.divider} />
           <Row
+            icon="cutlery"
+            title="自炊レシピ"
+            subtitle="登録した料理の編集・削除"
+            onPress={() => navigation.navigate('RecipesScreen')}
+          />
+          <View style={styles.divider} />
+          <Row
             icon="microchip"
             title="LLM モデル"
             subtitle={`記録: ${parserModel.label}\nコーチ: ${coachModel.label}`}

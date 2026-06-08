@@ -3,6 +3,7 @@ import { jsonrepair } from 'jsonrepair'
 // multi-intent パーサー出力スキーマ。
 //   kind に応じて使うフィールドが変わる discriminated union。
 //   food     → items
+//   recipe   → name, servings, ingredients (自炊レシピのまとめ作り登録)
 //   weight   → weight_kg
 //   activity → activity_name, duration_min
 //   unknown  → kind のみ
@@ -11,7 +12,7 @@ export const RecordSchema = {
   properties: {
     kind: {
       type: 'string',
-      enum: ['food', 'weight', 'activity', 'unknown'],
+      enum: ['food', 'recipe', 'weight', 'activity', 'unknown'],
       description: '記録の種類',
     },
     items: {
@@ -28,6 +29,21 @@ export const RecordSchema = {
             type: 'number',
             description: 'この品目1食分の常識的なカロリー目安 (整数、任意)。食品DBに無いときのフォールバック用',
           },
+        },
+        required: ['name', 'quantity', 'unit'],
+      },
+    },
+    name: { type: 'string', description: 'kind=recipe のときの料理名 (例: カレー)' },
+    servings: { type: 'number', description: 'kind=recipe のときの食数 (例: 5食分なら 5)' },
+    ingredients: {
+      type: 'array',
+      description: 'kind=recipe のときの材料リスト',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '材料名' },
+          quantity: { type: 'number', description: '材料の数量' },
+          unit: { type: 'string', description: '材料の単位 (g/個/本/缶 等)' },
         },
         required: ['name', 'quantity', 'unit'],
       },
@@ -190,6 +206,32 @@ const parseWeightKind = (parsed) => {
   return { kind: 'weight', weight_kg: weightKg }
 }
 
+const parseRecipeKind = (parsed) => {
+  const name = typeof parsed?.name === 'string' ? parsed.name.trim() : ''
+  if (!name) throw new Error('レシピ名を抽出できませんでした')
+  const servings = coerceNumber(parsed?.servings)
+  if (servings == null || servings <= 0 || servings > 50) {
+    throw new Error('食数を抽出できませんでした')
+  }
+  const ingredientsArray = Array.isArray(parsed?.ingredients) ? parsed.ingredients : []
+  const ingredients = ingredientsArray
+    .map((it) => {
+      if (!it || typeof it !== 'object') return null
+      const iname = coerceName(it.name)
+      if (!iname) return null
+      return {
+        name: iname,
+        quantity: coerceQuantity(it.quantity) ?? 1,
+        unit: coerceUnit(it.unit) ?? 'g',
+      }
+    })
+    .filter(Boolean)
+  if (ingredients.length === 0) {
+    throw new Error('材料を抽出できませんでした')
+  }
+  return { kind: 'recipe', name, servings, ingredients }
+}
+
 const parseActivityKind = (parsed) => {
   // LLM が food の items パターンに引きずられて
   // {"kind":"activity","items":[{"activity_name":..,"duration_min":..}]} を返してきた場合の救済
@@ -255,6 +297,8 @@ export const parseRecordOutput = (rawOutput) => {
   switch (kind) {
     case 'food':
       return withTruncated(parseFoodKind(parsed))
+    case 'recipe':
+      return withTruncated(parseRecipeKind(parsed))
     case 'weight':
       return parseWeightKind(parsed)
     case 'activity':

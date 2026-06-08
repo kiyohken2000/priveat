@@ -8,6 +8,8 @@ import ModelScreen from '../../../scenes/settings/ModelScreen'
 import HealthScreen from '../../../scenes/settings/HealthScreen'
 import StanceScreen from '../../../scenes/settings/StanceScreen'
 import BenchmarkScreen from '../../../scenes/settings/BenchmarkScreen'
+import RecipesScreen from '../../../scenes/settings/RecipesScreen'
+import RecipeEditScreen from '../../../scenes/settings/RecipeEditScreen'
 
 const Stack = createStackNavigator()
 
@@ -48,6 +50,16 @@ export const SettingsStacks = () => (
       name="BenchmarkScreen"
       component={BenchmarkScreen}
       options={{ title: 'モデル比較' }}
+    />
+    <Stack.Screen
+      name="RecipesScreen"
+      component={RecipesScreen}
+      options={{ title: '自炊レシピ' }}
+    />
+    <Stack.Screen
+      name="RecipeEditScreen"
+      component={RecipeEditScreen}
+      options={{ title: 'レシピを編集' }}
     />
   </Stack.Navigator>
 )
