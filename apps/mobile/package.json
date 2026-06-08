@@ -15,7 +15,6 @@
     "@kingstinct/react-native-healthkit": "^14.0.1",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/datetimepicker": "9.1.0",
-    "@react-native-community/masked-view": "0.1.10",
     "@react-navigation/bottom-tabs": "^7.4.7",
     "@react-navigation/drawer": "^7.5.8",
     "@react-navigation/material-top-tabs": "^7.3.7",
