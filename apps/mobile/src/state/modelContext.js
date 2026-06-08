@@ -34,7 +34,7 @@ const VLM_MODEL_KEY = '@priveat/vlm-model-id'
 const PENDING_LOAD_KEY = '@priveat/pending-model-load-v2'
 
 const DEFAULT_PARSER_MODEL_ID = 'qwen3-0.6b-q'
-const DEFAULT_COACH_MODEL_ID = 'qwen3-1.7b-q'
+const DEFAULT_COACH_MODEL_ID = 'qwen3-0.6b-q'
 
 // model.id は両カタログを跨いで一意の前提。
 const isValidId = (id) =>
