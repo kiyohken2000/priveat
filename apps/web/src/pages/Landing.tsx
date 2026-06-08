@@ -1,3 +1,4 @@
+import { createContext, useContext, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import s from './Landing.module.css'
 
@@ -24,13 +25,13 @@ const features: Feature[] = [
       '体重計・フィットネスアプリのスクショからも取り込み',
     ],
     shots: [
-      { src: '/screenshots/record-home.webp', alt: '記録モードの入口', caption: 'チャットから記録を開始' },
-      { src: '/screenshots/record-text.webp', alt: 'テキスト入力', caption: 'テキスト一文で分解' },
-      { src: '/screenshots/record-photo.webp', alt: '料理写真認識', caption: '料理写真から推定' },
-      { src: '/screenshots/record-label.webp', alt: '商品ラベル認識', caption: '商品ラベルを OCR' },
-      { src: '/screenshots/record-receipt.webp', alt: 'レシート認識', caption: 'レシートをまとめて取込' },
-      { src: '/screenshots/record-scale.webp', alt: '体重計スクショ認識', caption: '体重計のスクショ' },
-      { src: '/screenshots/record-fitness.webp', alt: 'フィットネススクショ認識', caption: 'フィットネスアプリの記録' },
+      { src: '/screenshots/record-home.png', alt: '記録モードの入口', caption: 'チャットから記録を開始' },
+      { src: '/screenshots/record-text.png', alt: 'テキスト入力', caption: 'テキスト一文で分解' },
+      { src: '/screenshots/record-photo.png', alt: '料理写真認識', caption: '料理写真から推定' },
+      { src: '/screenshots/record-label.png', alt: '商品ラベル認識', caption: '商品ラベルを OCR' },
+      { src: '/screenshots/record-receipt.png', alt: 'レシート認識', caption: 'レシートをまとめて取込' },
+      { src: '/screenshots/record-scale.png', alt: '体重計スクショ認識', caption: '体重計のスクショ' },
+      { src: '/screenshots/record-fitness.png', alt: 'フィットネススクショ認識', caption: 'フィットネスアプリの記録' },
     ],
   },
   {
@@ -43,9 +44,9 @@ const features: Feature[] = [
       'マスコットが今日を講評してくれる',
     ],
     shots: [
-      { src: '/screenshots/summary-1.webp', alt: '今日のサマリー', caption: '今日の数値とアドバイス' },
-      { src: '/screenshots/summary-2.webp', alt: '今日のサマリー 内訳', caption: '食事の内訳' },
-      { src: '/screenshots/summary-3.webp', alt: '今日のサマリー 続き', caption: '一日の流れ' },
+      { src: '/screenshots/summary-1.png', alt: '今日のサマリー', caption: '今日の数値とアドバイス' },
+      { src: '/screenshots/summary-2.png', alt: '今日のサマリー 内訳', caption: '食事の内訳' },
+      { src: '/screenshots/summary-3.png', alt: '今日のサマリー 続き', caption: '一日の流れ' },
     ],
   },
   {
@@ -57,8 +58,8 @@ const features: Feature[] = [
       '実データに基づく具体的な提案',
     ],
     shots: [
-      { src: '/screenshots/coach-1.webp', alt: 'コーチモード 入口' },
-      { src: '/screenshots/coach-2.webp', alt: 'コーチとの会話例' },
+      { src: '/screenshots/coach-1.png', alt: 'コーチモード 入口' },
+      { src: '/screenshots/coach-2.png', alt: 'コーチとの会話例' },
     ],
   },
   {
@@ -71,9 +72,9 @@ const features: Feature[] = [
       'カレンダーから過去の記録に飛べる',
     ],
     shots: [
-      { src: '/screenshots/history-1.webp', alt: '履歴 グラフ', caption: 'グラフで体重とカロリー' },
-      { src: '/screenshots/history-2.webp', alt: '履歴 週次アドバイス', caption: '週次の AI アドバイス' },
-      { src: '/screenshots/history-3.webp', alt: '履歴 カレンダー', caption: 'カレンダーから日別へ' },
+      { src: '/screenshots/history-1.png', alt: '履歴 グラフ', caption: 'グラフで体重とカロリー' },
+      { src: '/screenshots/history-2.png', alt: '履歴 週次アドバイス', caption: '週次の AI アドバイス' },
+      { src: '/screenshots/history-3.png', alt: '履歴 カレンダー', caption: 'カレンダーから日別へ' },
     ],
   },
   {
@@ -87,9 +88,9 @@ const features: Feature[] = [
       '材料・食数・栄養はあとから編集可能',
     ],
     shots: [
-      { src: '/screenshots/recipe-register-1.webp', alt: 'レシピ登録', caption: '材料と食数を入力' },
-      { src: '/screenshots/recipe-register-2.webp', alt: 'レシピ登録 結果', caption: '1 食あたりに換算' },
-      { src: '/screenshots/recipe-edit.webp', alt: 'レシピ編集', caption: '保存後も編集可能' },
+      { src: '/screenshots/recipe-register-1.png', alt: 'レシピ登録', caption: '材料と食数を入力' },
+      { src: '/screenshots/recipe-register-2.png', alt: 'レシピ登録 結果', caption: '1 食あたりに換算' },
+      { src: '/screenshots/recipe-edit.png', alt: 'レシピ編集', caption: '保存後も編集可能' },
     ],
   },
   {
@@ -103,8 +104,8 @@ const features: Feature[] = [
       '一覧から再記録 & 絞り込み検索',
     ],
     shots: [
-      { src: '/screenshots/my-foods-1.webp', alt: 'マイ食品 一覧' },
-      { src: '/screenshots/my-foods-2.webp', alt: 'マイ食品 詳細' },
+      { src: '/screenshots/my-foods-1.png', alt: 'マイ食品 一覧' },
+      { src: '/screenshots/my-foods-2.png', alt: 'マイ食品 詳細' },
     ],
   },
   {
@@ -117,8 +118,8 @@ const features: Feature[] = [
       '目標値・表示・同期の挙動を設定',
     ],
     shots: [
-      { src: '/screenshots/settings-1.webp', alt: '設定 一覧' },
-      { src: '/screenshots/settings-coach.webp', alt: 'コーチへの指示文' },
+      { src: '/screenshots/settings-1.png', alt: '設定 一覧' },
+      { src: '/screenshots/settings-coach.png', alt: 'コーチへの指示文' },
     ],
   },
   {
@@ -132,8 +133,8 @@ const features: Feature[] = [
       'ベンチで速度・精度を見比べて選べる',
     ],
     shots: [
-      { src: '/screenshots/model-select.webp', alt: 'LLM モデル選択' },
-      { src: '/screenshots/model-compare.webp', alt: 'LLM モデル比較' },
+      { src: '/screenshots/model-select.png', alt: 'LLM モデル選択' },
+      { src: '/screenshots/model-compare.png', alt: 'LLM モデル比較' },
     ],
   },
   {
@@ -145,9 +146,61 @@ const features: Feature[] = [
       '体重・歩数・消費カロリーを取り込み',
       'iOS は HealthKit、 Android は Health Connect',
     ],
-    shots: [{ src: '/screenshots/health-sync.webp', alt: 'ヘルスケアと連携' }],
+    shots: [{ src: '/screenshots/health-sync.png', alt: 'ヘルスケアと連携' }],
   },
 ]
+
+const ZoomContext = createContext<(src: string, alt: string) => void>(() => {})
+
+function Phone({
+  src,
+  alt,
+  extra,
+  eager,
+}: {
+  src: string
+  alt: string
+  extra?: string
+  eager?: boolean
+}) {
+  const onZoom = useContext(ZoomContext)
+  return (
+    <button
+      type="button"
+      className={`${s.phone} ${extra ?? ''}`}
+      onClick={() => onZoom(src, alt)}
+      aria-label={`${alt} を拡大表示`}
+    >
+      <img src={src} alt={alt} loading={eager ? 'eager' : 'lazy'} decoding="async" />
+    </button>
+  )
+}
+
+function Lightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prev
+    }
+  }, [onClose])
+  return (
+    <div
+      className={s.lightbox}
+      onClick={onClose}
+      role="button"
+      tabIndex={0}
+      aria-label="拡大表示を閉じる"
+    >
+      <img src={src} alt={alt} />
+    </div>
+  )
+}
 
 function FeatureBody({ f }: { f: Feature }) {
   return (
@@ -170,9 +223,7 @@ function PhonePair({ shots, reverse }: { shots: Shot[]; reverse: boolean }) {
       {shots.map((shot, i) => {
         const tilted = (i === 0) === !reverse ? '' : s.phoneAlt
         return (
-          <div key={shot.src} className={`${s.phone} ${s.phoneMd} ${tilted}`}>
-            <img src={shot.src} alt={shot.alt} />
-          </div>
+          <Phone key={shot.src} src={shot.src} alt={shot.alt} extra={`${s.phoneMd} ${tilted}`} />
         )
       })}
     </div>
@@ -197,9 +248,7 @@ function FeatureAlternating({ f, index }: { f: Feature; index: number }) {
       </div>
       <div className={s.featureShot}>
         {f.shots.length === 1 ? (
-          <div className={`${s.phone} ${reverse ? s.phoneAlt : ''}`}>
-            <img src={f.shots[0].src} alt={f.shots[0].alt} />
-          </div>
+          <Phone src={f.shots[0].src} alt={f.shots[0].alt} extra={reverse ? s.phoneAlt : ''} />
         ) : (
           <PhonePair shots={f.shots} reverse={reverse} />
         )}
@@ -217,9 +266,7 @@ function FeatureGallery({ f, altBg }: { f: Feature; altBg: boolean }) {
       <div className={s.galleryGrid}>
         {f.shots.map((shot) => (
           <div key={shot.src} className={s.galleryItem}>
-            <div className={`${s.phone} ${s.phoneSm}`}>
-              <img src={shot.src} alt={shot.alt} />
-            </div>
+            <Phone src={shot.src} alt={shot.alt} extra={s.phoneSm} />
             {shot.caption ? <span className={s.galleryCaption}>{shot.caption}</span> : null}
           </div>
         ))}
@@ -229,9 +276,10 @@ function FeatureGallery({ f, altBg }: { f: Feature; altBg: boolean }) {
 }
 
 export default function Landing() {
+  const [zoom, setZoom] = useState<{ src: string; alt: string } | null>(null)
   let altIndex = 0
   return (
-    <>
+    <ZoomContext.Provider value={(src, alt) => setZoom({ src, alt })}>
       {/* Hero */}
       <section className={s.hero}>
         <div className={s.heroInner}>
@@ -254,9 +302,7 @@ export default function Landing() {
             </ul>
           </div>
           <div className={s.heroShotWrap}>
-            <div className={s.phone}>
-              <img src="/screenshots/summary-1.webp" alt="今日のサマリー画面" />
-            </div>
+            <Phone src="/screenshots/summary-1.png" alt="今日のサマリー画面" eager />
           </div>
         </div>
       </section>
@@ -308,6 +354,8 @@ export default function Landing() {
           </div>
         </div>
       </section>
-    </>
+
+      {zoom && <Lightbox src={zoom.src} alt={zoom.alt} onClose={() => setZoom(null)} />}
+    </ZoomContext.Provider>
   )
 }
