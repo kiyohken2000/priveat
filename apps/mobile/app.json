@@ -42,6 +42,9 @@
         "android.permission.health.READ_WEIGHT",
         "android.permission.health.READ_ACTIVE_CALORIES_BURNED",
         "android.permission.health.READ_STEPS"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_MEDIA_VIDEO"
       ]
     },
     "runtimeVersion": {
