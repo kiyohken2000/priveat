@@ -2,6 +2,7 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native'
 import React, { useCallback, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
+  Alert,
   Dimensions,
   Pressable,
   RefreshControl,
@@ -18,6 +19,7 @@ import { colors, fontSize } from '../../theme'
 import { getCalorieSeries, getDailyHistory, getWeightSeries } from '../../db/history'
 import { getLatestWeight, getProfile } from '../../db/profile'
 import { computeBmr } from '../../utils/bmr'
+import { setLastHealthSync, syncHealthToDb } from '../../health/sync'
 
 const screenWidth = Dimensions.get('window').width
 
@@ -57,6 +59,7 @@ export default function History() {
   const navigation = useNavigation()
   const [loaded, setLoaded] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [syncing, setSyncing] = useState(false)
   const [weightSeries, setWeightSeries] = useState([])
   const [calorieSeries, setCalorieSeries] = useState([])
   const [daily, setDaily] = useState([])
@@ -103,6 +106,36 @@ export default function History() {
     await load()
     setRefreshing(false)
   }
+
+  // 「昨日押し忘れた」 対策。 設定 → ヘルス連携と同じ syncHealthToDb(daysBack:30) を
+  // 履歴画面からも実行できる。 最終同期日時は AsyncStorage 経由で共有。
+  const onSync = useCallback(async () => {
+    if (syncing) return
+    setSyncing(true)
+    try {
+      const r = await syncHealthToDb({ daysBack: 30 })
+      await setLastHealthSync(new Date().toISOString())
+      // 取り込んだデータがチャートに反映されるよう再ロード
+      await load()
+      // syncHealthToDb の戻り値は { weight: {inserted, updated, days}, energy: {...}, fetched: {...} }
+      const parts = []
+      if (r?.weight) {
+        parts.push(`体重: 新規 ${r.weight.inserted} 日 / 更新 ${r.weight.updated} 日`)
+      }
+      if (r?.energy) {
+        parts.push(`消費: 新規 ${r.energy.inserted} 日 / 更新 ${r.energy.updated} 日`)
+      }
+      Alert.alert(
+        'ヘルス同期 完了',
+        parts.length > 0 ? parts.join('\n') : '取り込めるデータはありませんでした',
+      )
+    } catch (err) {
+      console.warn('[history] health sync error:', err)
+      Alert.alert('同期エラー', err?.message ?? String(err))
+    } finally {
+      setSyncing(false)
+    }
+  }, [syncing, load])
 
   // ── 体重チャートデータ準備 ──
   const weightChart = useMemo(() => {
@@ -160,13 +193,32 @@ export default function History() {
           <>
             <View style={styles.titleRow}>
               <Text style={styles.title}>履歴</Text>
-              <Pressable
-                onPress={() => navigation.navigate('CalendarScreen')}
-                style={({ pressed }) => [styles.calendarBtn, pressed && styles.btnPressed]}
-              >
-                <FontIcon name="calendar" size={14} color={colors.white} />
-                <Text style={styles.calendarBtnText}>カレンダー</Text>
-              </Pressable>
+              <View style={styles.titleBtns}>
+                <Pressable
+                  onPress={onSync}
+                  disabled={syncing}
+                  style={({ pressed }) => [
+                    styles.syncBtn,
+                    (pressed || syncing) && styles.btnPressed,
+                  ]}
+                >
+                  {syncing ? (
+                    <ActivityIndicator size="small" color={colors.white} />
+                  ) : (
+                    <>
+                      <FontIcon name="heart" size={12} color={colors.white} />
+                      <Text style={styles.syncBtnText}>ヘルス同期</Text>
+                    </>
+                  )}
+                </Pressable>
+                <Pressable
+                  onPress={() => navigation.navigate('CalendarScreen')}
+                  style={({ pressed }) => [styles.calendarBtn, pressed && styles.btnPressed]}
+                >
+                  <FontIcon name="calendar" size={14} color={colors.white} />
+                  <Text style={styles.calendarBtnText}>カレンダー</Text>
+                </Pressable>
+              </View>
             </View>
 
             {/* 体重推移 */}
@@ -314,6 +366,27 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
+  },
+  titleBtns: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  syncBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.darkPurple,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 18,
+    marginRight: 8,
+    minWidth: 84,
+    justifyContent: 'center',
+  },
+  syncBtnText: {
+    color: colors.white,
+    fontSize: fontSize.small,
+    fontWeight: '600',
+    marginLeft: 4,
   },
   calendarBtn: {
     flexDirection: 'row',

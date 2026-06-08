@@ -1,5 +1,25 @@
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import { getDb } from '../db'
 import { fetchHealthSamples } from './index'
+
+// 最終同期日時 (ISO) の保存先。 HealthScreen と History の両方から共有する。
+export const LAST_HEALTH_SYNC_KEY = '@priveat/health-last-sync'
+
+export const getLastHealthSync = async () => {
+  try {
+    return await AsyncStorage.getItem(LAST_HEALTH_SYNC_KEY)
+  } catch (e) {
+    return null
+  }
+}
+
+export const setLastHealthSync = async (iso) => {
+  try {
+    await AsyncStorage.setItem(LAST_HEALTH_SYNC_KEY, iso)
+  } catch (e) {
+    // 失敗しても本体の同期は成功しているので silent
+  }
+}
 
 // 「YYYY-MM-DD」キー。SQLite の date() 関数と互換になるよう ISO date 部分を使う。
 const dayKey = (iso) => {

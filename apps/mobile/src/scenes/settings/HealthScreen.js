@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import React, { useCallback, useEffect, useState } from 'react'
 import {
   ActivityIndicator,
@@ -11,9 +10,7 @@ import {
   View,
 } from 'react-native'
 import { colors, fontSize } from '../../theme'
-import { syncHealthToDb } from '../../health/sync'
-
-const LAST_SYNC_KEY = '@priveat/health-last-sync'
+import { getLastHealthSync, setLastHealthSync, syncHealthToDb } from '../../health/sync'
 
 const formatDateTime = (iso) => {
   if (!iso) return null
@@ -36,7 +33,7 @@ export default function HealthScreen() {
   const [lastSync, setLastSync] = useState(null)
 
   useEffect(() => {
-    AsyncStorage.getItem(LAST_SYNC_KEY).then((v) => {
+    getLastHealthSync().then((v) => {
       if (v) setLastSync(v)
     })
   }, [])
@@ -50,7 +47,7 @@ export default function HealthScreen() {
       setResult(r)
       const now = new Date().toISOString()
       setLastSync(now)
-      await AsyncStorage.setItem(LAST_SYNC_KEY, now)
+      await setLastHealthSync(now)
     } catch (err) {
       console.warn('[health] sync error:', err)
       Alert.alert('同期エラー', err?.message ?? String(err))
