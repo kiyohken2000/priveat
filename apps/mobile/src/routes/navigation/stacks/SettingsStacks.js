@@ -10,6 +10,8 @@ import StanceScreen from '../../../scenes/settings/StanceScreen'
 import BenchmarkScreen from '../../../scenes/settings/BenchmarkScreen'
 import RecipesScreen from '../../../scenes/settings/RecipesScreen'
 import RecipeEditScreen from '../../../scenes/settings/RecipeEditScreen'
+import ProductsScreen from '../../../scenes/settings/ProductsScreen'
+import ProductEditScreen from '../../../scenes/settings/ProductEditScreen'
 
 const Stack = createStackNavigator()
 
@@ -60,6 +62,16 @@ export const SettingsStacks = () => (
       name="RecipeEditScreen"
       component={RecipeEditScreen}
       options={{ title: 'レシピを編集' }}
+    />
+    <Stack.Screen
+      name="ProductsScreen"
+      component={ProductsScreen}
+      options={{ title: 'マイ食品' }}
+    />
+    <Stack.Screen
+      name="ProductEditScreen"
+      component={ProductEditScreen}
+      options={{ title: 'マイ食品を編集' }}
     />
   </Stack.Navigator>
 )

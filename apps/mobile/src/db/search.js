@@ -2,6 +2,7 @@ import { getDb } from './index'
 import { lookupAlias } from '../data/foodAliases'
 import { lookupPortion } from '../data/portionWeights'
 import { findRecipeByExactName } from './recipes'
+import { findProductByExactName } from './products'
 
 // 文科省成分表の名前は "こめ　［水稲穀粒］　玄米" のように全角空白とブラケットを多用するので
 // 検索時には両方を取り除いた版でも一致を試す。
@@ -114,10 +115,38 @@ const adaptRecipeAsMatch = (recipe) => ({
   kind: 'recipe',
 })
 
+// マイ食品 (products) を foods スキーマ互換に正規化する。
+// products は「1 単位 (= serving_desc) あたり」 の kcal/PFC を持つので
+// kcal_per_serving に詰めて serving 系単位のフォールバック経路に乗せる。
+// FoodNameInput のサジェスト統合からも使うため export する。
+export const adaptProductAsMatch = (product) => ({
+  id: product.id,
+  food_code: null,
+  name: product.name,
+  category: null,
+  source: product.source ?? 'label_ocr',
+  alt_name: null,
+  kcal_per_100g: null,
+  protein_per_100g: null,
+  fat_per_100g: null,
+  carb_per_100g: null,
+  salt_per_100g: null,
+  fiber_per_100g: null,
+  serving_size_g: null,
+  kcal_per_serving: product.kcal,
+  serving_desc: product.serving_desc ?? null,
+  image_uri: product.image_uri ?? null,
+  kind: 'product',
+})
+
 export const findBestFood = async (query) => {
   const recipe = await findRecipeByExactName(query).catch(() => null)
   if (recipe && recipe.kcal_per_serving != null) {
     return adaptRecipeAsMatch(recipe)
+  }
+  const product = await findProductByExactName(query).catch(() => null)
+  if (product && product.kcal != null) {
+    return adaptProductAsMatch(product)
   }
   const code = lookupAlias(query)
   if (code) {
@@ -147,6 +176,12 @@ export const computeKcalFromMatch = (matchedFood, quantity, unit, originalName) 
   // 自炊レシピは「1食 = kcal_per_serving」固定で計算する。 単位が serving 系で
   // なくても (例: "1個" のような表記揺れ) 食数として扱う方が実用的。
   if (matchedFood.kind === 'recipe') {
+    if (matchedFood.kcal_per_serving == null) return null
+    return Math.round(matchedFood.kcal_per_serving * quantity)
+  }
+  // マイ食品も serving 系として扱う。 単位が g/グラム のときだけ別計算が必要だが
+  // products は per_100g を持たないので非対応 (= null)。
+  if (matchedFood.kind === 'product') {
     if (matchedFood.kcal_per_serving == null) return null
     return Math.round(matchedFood.kcal_per_serving * quantity)
   }

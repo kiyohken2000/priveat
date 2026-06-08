@@ -340,6 +340,143 @@ export const estimateKcalForFood = async (
   }
 }
 
+// 食品の「1 単位」 として自然な単位を 1 つ推定する。 ProductEditScreen の
+// 「1 単位の表示」 欄から呼ばれる。
+//   入力: 食品名のみ (kcal や数量は不要)
+//   出力: 候補リストから選ばれた 1 つの単位文字列、 または null
+//
+// 候補は記録モード / レシピ材料で実際によく使われるものに絞る。 候補外を返した
+// ときは「個」 にフォールバックせず null (= 推定失敗) を返し、 UI 側で Alert する。
+const ALLOWED_UNITS = ['個', '袋', '本', '枚', '缶', '杯', '切れ', '玉', 'パック', 'g', 'mL']
+
+// LFM2.5-1.2B-JP は <think> タグや構造化タグを使わず自然文で短く返す傾向が強い。
+// CoT を仕込もうとすると「1 単位」 とだけ吐いて止まることがあるので、
+// 「単位 1 語だけ書け」 と直接的に指示する。 分類ヒントは商品カテゴリ別に明示し、
+// じゃがりこ / ポテチ / グミなど商品名そのものを few-shot に含めて固有名詞のドリフト
+// (魚の「切れ」 を菓子に当てる等) を防ぐ。
+const UNIT_SYSTEM_PROMPT =
+  'あなたは食品の単位推定の専門家です。 食品名を受け取り、 「1 単位」 として最も自然な'
+  + `日本語の単位を 1 つだけ答えます。 候補: ${ALLOWED_UNITS.join(' / ')}\n\n`
+  + '分類ヒント:\n'
+  + '- 菓子・スナック (じゃがりこ・ポテチ・ポテトチップス・チョコ・グミ・クッキー): 袋\n'
+  + '- 飲料ペットボトル・水: 本\n'
+  + '- 缶飲料 (ビール・缶コーヒー・コーラ缶): 缶\n'
+  + '- 紙パック飲料 (牛乳・豆乳・ジュース): mL\n'
+  + '- パン類 スライス (食パン・トースト): 枚\n'
+  + '- パン類 単品 (菓子パン・コッペパン): 個\n'
+  + '- 麺類 完成 (ラーメン・うどん): 杯\n'
+  + '- 麺類 玉 (生うどん・焼きそば玉): 玉\n'
+  + '- 生肉・生魚・粉物 (鶏むね・小麦粉・米): g\n'
+  + '- 魚切り身: 切れ\n'
+  + '- 卵・おにぎり・りんご・バナナ: 個\n'
+  + '- 缶詰 (ホールトマト・ツナ・サバ): 缶\n'
+  + '- 豆腐・納豆・もずく: パック\n\n'
+  + '出力ルール (厳守): 単位 1 語のみを書く。 前置き「1 単位は」「答えは」 や説明文'
+  + '・記号・「です」・改行は禁止。 候補リストの単語をそのまま 1 つだけ書く。\n\n'
+  + '例:\n'
+  + 'じゃがりこ → 袋\n'
+  + 'ポテチ → 袋\n'
+  + 'サラダチキン → 個\n'
+  + 'ホールトマト → 缶\n'
+  + '食パン → 枚\n'
+  + 'コカコーラ 500ml → 本\n'
+  + 'アサヒビール 350ml 缶 → 缶'
+
+const buildUnitUserPrompt = (name) =>
+  `${name.trim()} → `
+
+// LLM 応答から単位を抽出。
+//   1) <unit>X</unit> タグ最優先 (プロンプトで指示した形式)
+//   2) 「1 単位は X」「答えは X」 「→ X」 のような自然文テンプレ
+//   3) 候補リスト単語の応答内出現位置で末尾を採用 (フォールバック)
+// 候補のうち、 日本語単位 (個・袋など) は前後の漢字だけ排除 (助詞「で」「は」 や
+// 句読点はマッチを許す)、 ASCII 単位 (g・mL) は ASCII 英数字を排除する。
+const isJapaneseUnit = (u) => /[぀-ヿ一-鿿]/.test(u)
+
+const buildUnitBoundaryRe = (u) => {
+  const escaped = u.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return isJapaneseUnit(u)
+    ? new RegExp(`(^|[^\\u4e00-\\u9fff])${escaped}(?![\\u4e00-\\u9fff])`, 'gu')
+    : new RegExp(`(^|[^A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, 'gu')
+}
+
+const parseUnit = (raw) => {
+  const text = String(raw ?? '')
+  const stripped = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+  if (!stripped) return null
+  if (/<think>/i.test(stripped) && !/<\/think>/i.test(stripped)) return null
+  // 1) <unit>X</unit> タグ最優先
+  const tag = stripped.match(/<unit>\s*([^<\s]+)\s*<\/unit>/i)
+  if (tag) {
+    const u = tag[1].trim()
+    if (ALLOWED_UNITS.includes(u)) return u
+  }
+  // 2) 自然文テンプレ: 「1 単位は X」 「答えは X」 「→ X」
+  //    LFM2.5-JP は「1 単位は 個です。」 のような形を返しがちなのでテンプレで先取り。
+  const tmplPatterns = [
+    /(?:1\s*単位は|答えは|単位は|→|->)\s*([^\s。、,.!?]+)/i,
+  ]
+  for (const re of tmplPatterns) {
+    const m = stripped.match(re)
+    if (m) {
+      const candidate = m[1].trim()
+      if (ALLOWED_UNITS.includes(candidate)) return candidate
+    }
+  }
+  // 3) 末尾出現位置フォールバック
+  let lastMatch = null
+  let lastPos = -1
+  ALLOWED_UNITS.forEach((u) => {
+    const re = buildUnitBoundaryRe(u)
+    let m
+    let posForU = -1
+    // eslint-disable-next-line no-cond-assign
+    while ((m = re.exec(stripped)) !== null) {
+      posForU = m.index
+    }
+    if (posForU > lastPos) {
+      lastPos = posForU
+      lastMatch = u
+    }
+  })
+  return lastMatch
+}
+
+export const estimateUnitForFood = async (llm, { name, modelLabel } = {}) => {
+  if (!name?.trim()) return { ok: false, error: '食品名が空です' }
+  if (!llm || !llm.isReady || llm.isGenerating) {
+    return { ok: false, error: 'AI モデルがまだ準備中です' }
+  }
+  const messages = [
+    { role: 'system', content: UNIT_SYSTEM_PROMPT },
+    { role: 'user', content: buildUnitUserPrompt(name) },
+  ]
+  console.log('========== AI unit estimate ==========')
+  console.log('[name]', name)
+  console.log('[model]', modelLabel ?? '(unknown)')
+  console.log('[messages]', JSON.stringify(messages, null, 2))
+  try {
+    const raw = await llm.generate(messages)
+    console.log('[raw]', raw)
+    const unit = parseUnit(raw)
+    if (unit) {
+      console.log('[result]', unit)
+      console.log('======================================')
+      return { ok: true, unit }
+    }
+    console.log('[result] rejected (no allowed unit found)')
+    console.log('======================================')
+    return {
+      ok: false,
+      error: `AI から有効な単位を取得できませんでした (応答: ${String(raw ?? '').slice(0, 40)}…)`,
+    }
+  } catch (err) {
+    console.warn('[ai unit] generate failed:', err)
+    console.log('======================================')
+    return { ok: false, error: err?.message ?? String(err) }
+  }
+}
+
 // 複数件をまとめて推定 (Chat FoodCard の「AI推定」用)。
 //   items: [{ id, name, quantity, unit }, ...]
 //   onItemDone: (item, result) => void — 1 件完了ごとのコールバック (UI 即時反映用)

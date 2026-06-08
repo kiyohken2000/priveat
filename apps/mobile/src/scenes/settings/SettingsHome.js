@@ -60,6 +60,13 @@ export default function SettingsHome() {
           />
           <View style={styles.divider} />
           <Row
+            icon="cube"
+            title="マイ食品"
+            subtitle="ラベル OCR / 手入力で登録した食品"
+            onPress={() => navigation.navigate('ProductsScreen')}
+          />
+          <View style={styles.divider} />
+          <Row
             icon="microchip"
             title="LLM モデル"
             subtitle={`記録: ${parserModel.label}\nコーチ: ${coachModel.label}`}

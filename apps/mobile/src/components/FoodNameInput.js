@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import { defaultUnitForName } from '../data/portionWeights'
-import { searchFoodsByName } from '../db/search'
+import { adaptProductAsMatch, searchFoodsByName } from '../db/search'
+import { searchProductsByName } from '../db/products'
 import { colors, fontSize } from '../theme'
 
 // 食品名 TextInput の共通コンポーネント。入力中に foods テーブルを検索して
@@ -65,10 +66,18 @@ export default function FoodNameInput({
     const myId = ++reqIdRef.current
     const t = setTimeout(async () => {
       try {
-        const rows = await searchFoodsByName(q, MAX_RESULTS)
+        // マイ食品 (products) と foods を並列で検索してマージする。
+        // ユーザー登録は数が限られるので先頭に並べる。
+        const [products, foods] = await Promise.all([
+          searchProductsByName(q, MAX_RESULTS),
+          searchFoodsByName(q, MAX_RESULTS),
+        ])
         if (reqIdRef.current !== myId) return
-        setSuggestions(rows)
-        setShowSuggest(rows.length > 0)
+        const productMatches = products.map(adaptProductAsMatch)
+        const foodMatches = foods.map((f) => ({ ...f, kind: 'food' }))
+        const merged = [...productMatches, ...foodMatches].slice(0, MAX_RESULTS)
+        setSuggestions(merged)
+        setShowSuggest(merged.length > 0)
       } catch (e) {
         if (reqIdRef.current !== myId) return
         console.warn('[FoodNameInput] search failed:', e?.message ?? e)
@@ -115,10 +124,21 @@ export default function FoodNameInput({
     setShowSuggest(false)
     onChangeText?.(food.name)
     // 第3引数として「この食品にふさわしい既定単位」を渡す。
-    // foods テーブルには単位カラムが無いので portionWeights.js の登録から推定する。
-    // ヒットしないことも多い (= 呼び元は受け取った値が null なら何もしない)。
-    const suggestedUnit = defaultUnitForName(food.name)
+    // マイ食品 (kind='product') は serving_desc があれば最優先で採用、
+    // 無ければ「個」をフォールバック (LabelRecordCard と同じ既定)。
+    // foods は portionWeights.js の登録から推定 (ヒットしないことも多い)。
+    let suggestedUnit
+    if (food.kind === 'product') {
+      suggestedUnit = food.serving_desc?.trim() || '個'
+    } else {
+      suggestedUnit = defaultUnitForName(food.name)
+    }
     onCommit?.(food.name, food, suggestedUnit)
+  }
+
+  const badgeLabel = (food) => {
+    if (food.kind !== 'product') return null
+    return food.source === 'manual' ? 'マイ食品' : 'ラベル'
   }
 
   return (
@@ -134,21 +154,29 @@ export default function FoodNameInput({
       />
       {showSuggest && suggestions.length > 0 ? (
         <View style={styles.suggestBox}>
-          {suggestions.map((food, i) => (
-            <TouchableOpacity
-              key={food.id ?? `${food.name}-${i}`}
-              onPress={() => pickSuggestion(food)}
-              activeOpacity={0.6}
-              style={[
-                styles.suggestRow,
-                i < suggestions.length - 1 && styles.suggestRowBorder,
-              ]}
-            >
-              <Text style={styles.suggestName} numberOfLines={1}>
-                {food.name}
-              </Text>
-            </TouchableOpacity>
-          ))}
+          {suggestions.map((food, i) => {
+            const badge = badgeLabel(food)
+            return (
+              <TouchableOpacity
+                key={`${food.kind ?? 'food'}-${food.id ?? `${food.name}-${i}`}`}
+                onPress={() => pickSuggestion(food)}
+                activeOpacity={0.6}
+                style={[
+                  styles.suggestRow,
+                  i < suggestions.length - 1 && styles.suggestRowBorder,
+                ]}
+              >
+                <Text style={styles.suggestName} numberOfLines={1}>
+                  {food.name}
+                </Text>
+                {badge ? (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>{badge}</Text>
+                  </View>
+                ) : null}
+              </TouchableOpacity>
+            )
+          })}
         </View>
       ) : null}
     </View>
@@ -179,5 +207,16 @@ const styles = StyleSheet.create({
     fontSize: fontSize.small,
     color: colors.black,
     flex: 1,
+  },
+  badge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: colors.lightPurple,
+  },
+  badgeText: {
+    fontSize: 10,
+    color: colors.white,
+    fontWeight: '600',
   },
 })
