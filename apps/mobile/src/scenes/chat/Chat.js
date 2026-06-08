@@ -335,6 +335,142 @@ const buildFewShot = (engine) => {
 export const buildSystemPrompt = (engine) =>
   `${PARSER_SYSTEM_PROMPT}\n${getRecordSchemaPrompt()}\n${buildFewShot(engine)}\n/no_think`
 
+// ---- 2-stage parser POC 用プロンプト (BenchmarkScreen で使用) -----------
+// Stage 1: kind 分類のみ。 出力は {"kind":"food"} のような短い JSON。
+// Stage 2: kind ごとの専用プロンプトで詳細抽出。 単発版より各ステージが
+// 短くなる + few-shot が絞れるので精度向上を期待する。 現状は POC で
+// food のみ実装。 weight/activity/recipe は単発版で問題が無いため省略。
+const STAGE1_KIND_PROMPT = `あなたはユーザーのメッセージを分類するクラシファイアです。
+入力を以下のいずれかに分類してください:
+- "food":     食事の記録 (例: カツ丼、 鶏むね200g、 ごはんとサラダ)
+- "weight":   体重の記録 (例: 体重68.5kg、 今朝70.2)
+- "activity": 運動の記録 (例: ランニング30分、 5km走った)
+- "recipe":   自炊レシピ (「N食分作った」 のように複数食分まとめて作る記述)
+- "unknown":  上記いずれでもない
+
+{"kind":"<分類>"} の形だけで返答してください。 説明やコードフェンスは不要。
+/no_think`
+
+const STAGE2_FOOD_PROMPT = `あなたは食事の記述を構造化データに変換するパーサーです。
+ユーザー入力から食事の品目を抽出し、 {"items":[...]} の形で出力してください。
+
+ルール:
+- 各品目は name / quantity / unit を必須、 estimated_kcal は任意 (整数、 0-2000)
+- 入力に明示的に書かれた品目だけ抽出 (例の品目を勝手に混ぜない)
+- name は入力の語をそのまま使う (短縮しない、 1 文字も削らない)
+- 単位は g / 個 / 本 / 杯 / 枚 / 切 / 缶 / 袋 / 人前 など自然なものを選ぶ
+- 「200g」 「2本」 のように数量・単位が書かれていればそのまま使う
+- 数量も単位も無い品目だけ quantity=1, unit="人前"
+- 「大盛り」 「少なめ」 などのニュアンスは portion フィールドに
+
+例:
+入力: 鶏むね200g
+出力: {"items":[{"name":"鶏むね","quantity":200,"unit":"g","estimated_kcal":230}]}
+
+入力: ごはん大盛りとバナナ1本と焼き魚
+出力: {"items":[{"name":"ごはん","quantity":1,"unit":"杯","portion":"大盛り","estimated_kcal":340},{"name":"バナナ","quantity":1,"unit":"本","estimated_kcal":86},{"name":"焼き魚","quantity":1,"unit":"切","estimated_kcal":150}]}
+
+ユーザーへの返答はしない。 JSON だけを返すこと。
+/no_think`
+
+export const buildStage1Prompt = () => STAGE1_KIND_PROMPT
+export const buildStage2FoodPrompt = () => STAGE2_FOOD_PROMPT
+
+// ---- ルールベース kind 分類器 (LLM stage1 の代替) ----------------------
+// LLM stage1 が 「鶏むね200g」 を weight/recipe と誤分類するベンチ結果が出たため、
+// LLM の代わりに正規表現で kind を判定する。 食事アプリの入力ドメインは
+// constrained (weight/activity/recipe は literal キーワードが強い) なので、
+// 正規表現で 95%+ の精度が出る見込み。
+// 設計方針:
+//   - food 優先 (最頻出かつ多様。 明確な signal が無ければ food にフォールバック)
+//   - 体重 → 「体重」 キーワード OR 純数値 (体重相場 30-200kg)
+//   - 運動 → 運動動詞 (走/歩/泳/筋トレ/サイクリング 等)
+//   - レシピ → 「食分」 「人前」 + 「作」 系動詞 (まとめ作り)
+//   - その他 → food (parser が品目抽出を試みる)
+// ambiguous なケースは food に倒して、 後段 stage2 で 「items 抽出失敗」 と
+// なれば誠実なエラーメッセージを返すほうが、 weight/activity に誤分類して
+// 体重値を勝手に取り出すよりマシ。
+export const classifyByRules = (input) => {
+  const s = String(input || '').trim()
+  if (!s) return 'unknown'
+
+  // recipe: 食分/人前 と 作る系動詞の両方
+  if (/(食分|人前)/.test(s) && /作/.test(s)) return 'recipe'
+
+  // activity: 運動動詞 OR 運動名
+  if (
+    /(走|歩い|歩く|歩いた|泳|漕|ラン(ニング)?|ジョグ|ジョギング|ウォーク|ウォーキング|サイクリング|自転車|筋トレ|ヨガ|ストレッチ|スクワット|腕立て|懸垂|ベンチプレス|デッドリフト)/.test(s)
+  ) {
+    return 'activity'
+  }
+
+  // weight:
+  //   1. 「体重」 キーワード明示
+  //   2. 純数値 (体重相場 30-200kg、 任意 kg/キロ 単位)
+  if (/体重/.test(s)) return 'weight'
+  const pureNum = s.match(/^\s*(\d{2,3}(?:\.\d+)?)\s*(?:kg|キロ|キログラム)?\s*$/i)
+  if (pureNum) {
+    const n = parseFloat(pureNum[1])
+    if (n >= 30 && n <= 200) return 'weight'
+  }
+
+  return 'food'
+}
+
+// ---- kind 別 stage2 プロンプト ----------------------------------------
+// 各 kind が極端に短く focused になるので、 単発の 4372 chars プロンプトより
+// モデルが think に時間を取られない (ベンチでは多品目 food で 2-3x 高速化)。
+const STAGE2_WEIGHT_PROMPT = `あなたは体重の数値を抽出するパーサーです。
+ユーザー入力から体重 (kg 単位) を抽出し、 {"weight_kg":<数値>} の形だけで出力してください。
+
+ルール:
+- 「68.5kg」 → 68.5、 「70.2」 だけでも 70.2
+- 単位省略は kg として扱う
+- 整数も小数も可
+
+例:
+入力: 体重68.5kg
+出力: {"weight_kg":68.5}
+
+入力: 70.2
+出力: {"weight_kg":70.2}
+
+入力: 今朝の体重65
+出力: {"weight_kg":65}
+
+JSON だけを返すこと。
+/no_think`
+
+const STAGE2_ACTIVITY_PROMPT = `あなたは運動の記述を構造化データに変換するパーサーです。
+ユーザー入力から種目・時間・距離を抽出し、 {"activity_name":..,"duration_min":..,"distance_km":..} の形で出力してください。
+
+ルール:
+- activity_name は名詞形に正規化:
+  - 走った/ランニング/ジョギング → "ランニング"
+  - 歩いた/ウォーキング → "ウォーキング"
+  - 泳いだ/水泳 → "水泳"
+  - 自転車/漕いだ/サイクリング → "サイクリング"
+  - 筋トレ/ウェイト → "筋トレ"
+- duration_min は分単位 ("30分" → 30、 "1時間" → 60)
+- distance_km は km 単位 ("3km"/"3キロ" → 3、 "500m" → 0.5)
+- 該当しないフィールドは出力に含めない (省略可)
+
+例:
+入力: 30分で3キロ走った
+出力: {"activity_name":"ランニング","duration_min":30,"distance_km":3}
+
+入力: ウォーキング1時間
+出力: {"activity_name":"ウォーキング","duration_min":60}
+
+入力: 5km走った
+出力: {"activity_name":"ランニング","distance_km":5}
+
+JSON だけを返すこと。
+/no_think`
+
+export const buildStage2WeightPrompt = () => STAGE2_WEIGHT_PROMPT
+export const buildStage2ActivityPrompt = () => STAGE2_ACTIVITY_PROMPT
+
 // レシピモード専用 parser プロンプト。
 //   - kind は必ず "recipe" にする。 食事/体重/運動と判定したくなる入力でも recipe で返す。
 //   - ingredients は最低 1 つ、 servings は必須。

@@ -16,7 +16,14 @@ import { LLM_MODELS } from '../../data/llmModels'
 import { LLM_LLAMA_RN_TEXT_MODELS } from '../../data/llmTextModelsLlamaRn'
 import { useActiveLLM, useActiveModel } from '../../state/modelContext'
 import { parseRecordOutput } from '../chat/schema'
-import { buildSystemPrompt as buildParserSystemPrompt } from '../chat/Chat'
+import {
+  buildSystemPrompt as buildParserSystemPrompt,
+  buildStage2FoodPrompt,
+  buildStage2WeightPrompt,
+  buildStage2ActivityPrompt,
+  buildRecipeSystemPrompt,
+  classifyByRules,
+} from '../chat/Chat'
 import { buildCoachSystemPrompt } from '../../coaching/prompts'
 import { buildCoachingContext } from '../../coaching/context'
 import {
@@ -48,10 +55,11 @@ import { listDownloadedModelIds, downloadModel } from '../../services/modelStora
 const PRESETS = {
   parser: [
     'カツ丼と缶チューハイ2本',
-    '30分で3キロ走った',
-    '体重68.5kg',
     'ごはん大盛りとバナナ1本と焼き魚',
+    '鶏むね200g',
+    '体重68.5kg',
     '体重70.2',
+    '30分で3キロ走った',
   ],
   coach: [
     '今週どうだった?',
@@ -73,8 +81,41 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const isLlamaRn = (m) => m.engine === 'llama_rn'
 
+// stage2 出力に kind を補って parseRecordOutput に渡す。
+// stage2 プロンプトは kind フィールドを出力しない (ルール分類器で確定済みなので
+// 冗長 + qwen3 の入れ子バグ回避) ので、 ここで補う。
+// food だけは例外で、 parseRecordOutput が kind 無し + items 配列なら food として
+// 扱う互換挙動を持つので何もしない。
+const parseStage2Output = (rawOutput, kind) => {
+  if (kind === 'unknown') return { kind: 'unknown' }
+  if (kind === 'food') return parseRecordOutput(rawOutput)
+  if (!rawOutput) throw new Error('stage2 出力が空です')
+
+  const cleaned = String(rawOutput)
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .trim()
+  const start = cleaned.search(/[{[]/)
+  if (start < 0) throw new Error('JSON が見つかりません')
+  // 最初の { の直後に "kind":"<kind>", を差し込む
+  const head = cleaned.slice(0, start + 1)
+  const tail = cleaned.slice(start + 1)
+  const injected = `${head}"kind":"${kind}",${tail}`
+  return parseRecordOutput(injected)
+}
+
+// kind に応じた stage2 プロンプトを返す。 unknown は stage2 を走らせない。
+const getStage2Prompt = (kind) => {
+  if (kind === 'food') return buildStage2FoodPrompt()
+  if (kind === 'weight') return buildStage2WeightPrompt()
+  if (kind === 'activity') return buildStage2ActivityPrompt()
+  if (kind === 'recipe') return buildRecipeSystemPrompt()
+  return null
+}
+
 export default function BenchmarkScreen() {
   const [role, setRole] = useState('parser')
+  // parser 専用: 単発 / 2-stage の切替。 2-stage は kind 分類 → 詳細抽出の 2 段。
+  const [parseMode, setParseMode] = useState('single') // 'single' | '2stage'
   const [input, setInput] = useState(PRESETS.parser[0])
   // 初期選択は空 (DL 状態に依存しない見た目にする。DL 済みの中からユーザーが選ぶ)
   const [selected, setSelected] = useState(new Set())
@@ -349,6 +390,93 @@ export default function BenchmarkScreen() {
     [role, swapToExecutorchModel, modelCtx],
   )
 
+  // 2-stage parser POC: stage1 はルールベース分類器 (LLM 不使用、 0ms 近い)、
+  // stage2 は kind 別のフォーカスされたプロンプトで LLM を 1 回叩く。
+  // 戻り値: { loadMs, stage1Ms, stage1Out, kind, stage2Ms, stage2Out, error }
+  //   stage1Out にはルール分類のラベル文字列を入れる (UI 表示用)。
+  const runTwoStage = useCallback(
+    async (model, userInput, onPhase) => {
+      // stage1: ルール分類 (同期、 ほぼ 0ms)
+      const t1 = Date.now()
+      const kind = classifyByRules(userInput)
+      const stage1Ms = Date.now() - t1
+      const stage1Out = `[rule] kind=${kind}`
+      const stage2Prompt = getStage2Prompt(kind)
+      // unknown はそもそも LLM 不要、 即座に返す
+      if (!stage2Prompt) {
+        return {
+          loadMs: 0,
+          stage1Ms, stage1Out, kind,
+          stage2Ms: 0, stage2Out: '',
+          error: null,
+        }
+      }
+
+      if (isLlamaRn(model)) {
+        const t0 = Date.now()
+        let initDone = 0
+        let stage2Ms = 0
+        let stage2Out = ''
+        let error = null
+
+        try {
+          await runWithLlamaRnText({ model, modelContext: modelCtx }, async (llama) => {
+            initDone = Date.now()
+            onPhase?.('stage2')
+            const t2 = Date.now()
+            const r2 = await llama.completion({
+              messages: [
+                { role: 'system', content: stage2Prompt },
+                { role: 'user', content: userInput },
+              ],
+              jinja: true,
+              n_predict: kind === 'food' || kind === 'recipe' ? 384 : 96,
+              temperature: 0.2,
+            })
+            stage2Ms = Date.now() - t2
+            stage2Out = (r2?.text ?? r2?.content ?? '').toString()
+          })
+        } catch (e) {
+          error = e?.message ?? String(e)
+        }
+        const loadMs = initDone ? initDone - t0 : Date.now() - t0
+        return { loadMs, stage1Ms, stage1Out, kind, stage2Ms, stage2Out, error }
+      }
+
+      // executorch 経路
+      onPhase?.('loading')
+      const swap = await swapToExecutorchModel(model.id)
+      if (!swap.ok) {
+        return {
+          loadMs: swap.loadMs,
+          stage1Ms, stage1Out, kind,
+          stage2Ms: 0, stage2Out: '',
+          error: swap.error,
+        }
+      }
+
+      let stage2Ms = 0
+      let stage2Out = ''
+      let error = null
+
+      try {
+        onPhase?.('stage2')
+        const t2 = Date.now()
+        const r2 = await llmRef.current.generate([
+          { role: 'system', content: stage2Prompt },
+          { role: 'user', content: userInput },
+        ])
+        stage2Ms = Date.now() - t2
+        stage2Out = typeof r2 === 'string' ? r2 : String(r2 ?? '')
+      } catch (e) {
+        error = e?.message ?? String(e)
+      }
+
+      return { loadMs: swap.loadMs, stage1Ms, stage1Out, kind, stage2Ms, stage2Out, error }
+    },
+    [swapToExecutorchModel, modelCtx],
+  )
+
   const runBenchmark = useCallback(async () => {
     if (running) return
     if (!input.trim()) {
@@ -385,8 +513,10 @@ export default function BenchmarkScreen() {
     // ループ内で都度参照したいので、 state とは別にローカルでも保持
     const collected = []
 
+    const isTwoStage = role === 'parser' && parseMode === '2stage'
+
     console.log('================================================================')
-    console.log(`====== Benchmark START [role=${role}] ======`)
+    console.log(`====== Benchmark START [role=${role}${isTwoStage ? ' / 2-stage' : ''}] ======`)
     console.log('[input]', input.trim())
     console.log('[targets]', targets.map((m) => `${m.label} (${isLlamaRn(m) ? 'llama.rn' : 'executorch'})`))
 
@@ -407,6 +537,72 @@ export default function BenchmarkScreen() {
         setProgress({ i, total: targets.length, modelLabel: m.label, phase: 'loading' })
         console.log(`\n--- [${i + 1}/${targets.length}] ${m.label} (${engineLabel}) ---`)
 
+        let entry
+        if (isTwoStage) {
+          const r = await runTwoStage(m, input.trim(), (phase) => {
+            setProgress({ i, total: targets.length, modelLabel: m.label, phase })
+          })
+
+          // ルール分類器が決めた kind 別に stage2 出力をパース。
+          // unknown は LLM 不要なので stage2Out が空でも kind だけ返す。
+          let parseResult = null
+          if (r.kind === 'unknown') {
+            parseResult = { kind: 'unknown' }
+          } else if (r.stage2Out) {
+            try {
+              parseResult = parseStage2Output(r.stage2Out, r.kind)
+            } catch (e) {
+              parseResult = { error: e?.message ?? String(e) }
+            }
+          } else if (r.kind) {
+            parseResult = { kind: r.kind }
+          }
+
+          entry = {
+            modelId: m.id,
+            modelLabel: m.label,
+            engine: engineLabel,
+            loadMs: r.loadMs,
+            // 結果カードは合計 gen 時間で揃える
+            genMs: (r.stage1Ms ?? 0) + (r.stage2Ms ?? 0),
+            stage1Ms: r.stage1Ms,
+            stage1Out: r.stage1Out,
+            kindStage1: r.kind,
+            stage2Ms: r.stage2Ms,
+            stage2Out: r.stage2Out,
+            output: r.stage2Out || r.stage1Out, // カード表示用 (詳しい方)
+            parseResult,
+            error: r.error,
+            twoStage: true,
+          }
+          collected.push(entry)
+          setResults((prev) => [...prev, entry])
+
+          console.log(`[load] ${r.loadMs}ms`)
+          console.log(`[stage1/rule] ${r.stage1Ms}ms / kind=${r.kind ?? '(none)'}`)
+          if (r.kind && r.kind !== 'unknown') {
+            console.log(`[stage2] ${r.stage2Ms}ms`)
+            console.log(`  out: ${r.stage2Out || '(空応答)'}`)
+          } else {
+            console.log(`[stage2] skipped (kind=${r.kind ?? 'none'})`)
+          }
+          if (r.error) {
+            console.log('[error]', r.error)
+          }
+          if (parseResult) {
+            if (parseResult.error) {
+              console.log('[parse] NG:', parseResult.error)
+            } else {
+              const itemsInfo = parseResult.items ? ` items=${parseResult.items.length}` : ''
+              console.log(`[parse] OK kind=${parseResult.kind}${itemsInfo}`)
+              if (parseResult.items) {
+                console.log('[items]', JSON.stringify(parseResult.items, null, 2))
+              }
+            }
+          }
+          continue
+        }
+
         const systemPrompt = role === 'parser' ? buildParserSystemPrompt(engine) : coachPrompt
         if (role === 'parser') {
           console.log('[systemPrompt length]', systemPrompt.length, 'chars')
@@ -425,7 +621,7 @@ export default function BenchmarkScreen() {
           }
         }
 
-        const entry = {
+        entry = {
           modelId: m.id,
           modelLabel: m.label,
           engine: engineLabel,
@@ -475,30 +671,60 @@ export default function BenchmarkScreen() {
       const labelWidth = Math.max(...collected.map((r) => r.modelLabel.length), 20)
       const pad = (s, w) => String(s).padEnd(w)
       const padL = (s, w) => String(s).padStart(w)
-      console.log(
-        pad('model', labelWidth + 1) +
-          pad('engine', 12) +
-          padL('load(s)', 9) +
-          padL('gen(s)', 9) +
-          '  result',
-      )
-      console.log('-'.repeat(labelWidth + 1 + 12 + 9 + 9 + 2 + 20))
-      for (const r of collected) {
-        const status = r.error
-          ? 'ERROR'
-          : r.parseResult
-          ? r.parseResult.error
-            ? 'parse NG'
-            : `parse OK (${r.parseResult.kind})`
-          : 'ok'
+      if (isTwoStage) {
         console.log(
-          pad(r.modelLabel, labelWidth + 1) +
-            pad(r.engine, 12) +
-            padL((r.loadMs / 1000).toFixed(1), 9) +
-            padL((r.genMs / 1000).toFixed(1), 9) +
-            '  ' +
-            status,
+          pad('model', labelWidth + 1) +
+            pad('engine', 12) +
+            padL('load(s)', 9) +
+            padL('s1(s)', 8) +
+            padL('s2(s)', 8) +
+            '  result',
         )
+        console.log('-'.repeat(labelWidth + 1 + 12 + 9 + 8 + 8 + 2 + 24))
+        for (const r of collected) {
+          const status = r.error
+            ? 'ERROR'
+            : r.parseResult
+            ? r.parseResult.error
+              ? `parse NG (s1=${r.kindStage1 ?? 'none'})`
+              : `parse OK (${r.parseResult.kind})${r.parseResult.items ? ` x${r.parseResult.items.length}` : ''}`
+            : 'ok'
+          console.log(
+            pad(r.modelLabel, labelWidth + 1) +
+              pad(r.engine, 12) +
+              padL((r.loadMs / 1000).toFixed(1), 9) +
+              padL(((r.stage1Ms ?? 0) / 1000).toFixed(1), 8) +
+              padL(((r.stage2Ms ?? 0) / 1000).toFixed(1), 8) +
+              '  ' +
+              status,
+          )
+        }
+      } else {
+        console.log(
+          pad('model', labelWidth + 1) +
+            pad('engine', 12) +
+            padL('load(s)', 9) +
+            padL('gen(s)', 9) +
+            '  result',
+        )
+        console.log('-'.repeat(labelWidth + 1 + 12 + 9 + 9 + 2 + 20))
+        for (const r of collected) {
+          const status = r.error
+            ? 'ERROR'
+            : r.parseResult
+            ? r.parseResult.error
+              ? 'parse NG'
+              : `parse OK (${r.parseResult.kind})`
+            : 'ok'
+          console.log(
+            pad(r.modelLabel, labelWidth + 1) +
+              pad(r.engine, 12) +
+              padL((r.loadMs / 1000).toFixed(1), 9) +
+              padL((r.genMs / 1000).toFixed(1), 9) +
+              '  ' +
+              status,
+          )
+        }
       }
       console.log('================================================================')
     } catch (e) {
@@ -518,7 +744,7 @@ export default function BenchmarkScreen() {
       setProgress(null)
       setRunning(false)
     }
-  }, [running, input, selected, role, llm, downloaded, runOneModel, setCoachModelId, setCurrentRole])
+  }, [running, input, selected, role, parseMode, llm, downloaded, runOneModel, runTwoStage, setCoachModelId, setCurrentRole])
 
   const renderExecutorchModelRow = (m) => {
     const isDownloaded = downloaded[m.id]
@@ -671,6 +897,38 @@ export default function BenchmarkScreen() {
           </TouchableOpacity>
         </View>
 
+        {role === 'parser' && (
+          <>
+            <Text style={styles.sectionLabel}>parser モード</Text>
+            <View style={styles.roleRow}>
+              <TouchableOpacity
+                onPress={() => !running && setParseMode('single')}
+                disabled={running}
+                style={[styles.roleBtn, parseMode === 'single' && styles.roleBtnActive, running && styles.disabled]}
+              >
+                <Text style={[styles.roleBtnText, parseMode === 'single' && styles.roleBtnTextActive]}>
+                  単発
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => !running && setParseMode('2stage')}
+                disabled={running}
+                style={[styles.roleBtn, parseMode === '2stage' && styles.roleBtnActive, running && styles.disabled]}
+              >
+                <Text style={[styles.roleBtnText, parseMode === '2stage' && styles.roleBtnTextActive]}>
+                  2-stage (POC)
+                </Text>
+              </TouchableOpacity>
+            </View>
+            {parseMode === '2stage' && (
+              <Text style={styles.sectionHint}>
+                stage 1 はルール分類器 (正規表現、 LLM 不使用)、 stage 2 で kind 別の詳細抽出。
+                food / weight / activity / recipe を stage 2 で処理 (unknown はスキップ)。
+              </Text>
+            )}
+          </>
+        )}
+
         <Text style={styles.sectionLabel}>テスト入力</Text>
         <View style={styles.presetRow}>
           {PRESETS[role].map((p) => (
@@ -723,7 +981,13 @@ export default function BenchmarkScreen() {
               <Text style={styles.runBtnText}>
                 {progress
                   ? `${progress.i + 1}/${progress.total} ${progress.modelLabel} (${
-                      progress.phase === 'loading' ? '読み込み中' : '推論中'
+                      progress.phase === 'loading'
+                        ? '読み込み中'
+                        : progress.phase === 'stage1'
+                          ? 'stage 1'
+                          : progress.phase === 'stage2'
+                            ? 'stage 2'
+                            : '推論中'
                     })`
                   : '実行中…'}
               </Text>
@@ -750,6 +1014,37 @@ export default function BenchmarkScreen() {
                 </View>
                 {r.error ? (
                   <Text style={styles.resultError}>エラー: {r.error}</Text>
+                ) : r.twoStage ? (
+                  <>
+                    <Text style={styles.resultStageLabel}>
+                      stage 1 [rule] ({((r.stage1Ms ?? 0)).toFixed(0)}ms) / kind={r.kindStage1 ?? '(none)'}
+                    </Text>
+                    {r.kindStage1 && r.kindStage1 !== 'unknown' && (
+                      <>
+                        <Text style={styles.resultStageLabel}>
+                          stage 2 ({((r.stage2Ms ?? 0) / 1000).toFixed(1)}s)
+                        </Text>
+                        <Text style={styles.resultOutput} selectable>
+                          {r.stage2Out || '(空応答)'}
+                        </Text>
+                      </>
+                    )}
+                    {r.parseResult && (
+                      <Text
+                        style={
+                          r.parseResult.error ? styles.resultParseNg : styles.resultParseOk
+                        }
+                      >
+                        {r.parseResult.error
+                          ? `パース失敗: ${r.parseResult.error}`
+                          : `パース成功: kind=${r.parseResult.kind}${
+                              r.parseResult.items
+                                ? ` / items=${r.parseResult.items.length}`
+                                : ''
+                            }`}
+                      </Text>
+                    )}
+                  </>
                 ) : (
                   <>
                     <Text style={styles.resultOutput} selectable>
@@ -1014,6 +1309,12 @@ const styles = StyleSheet.create({
     padding: 8,
     borderRadius: 4,
     marginTop: 4,
+  },
+  resultStageLabel: {
+    fontSize: fontSize.small,
+    color: colors.darkPurple,
+    fontWeight: '700',
+    marginTop: 8,
   },
   resultParseOk: {
     fontSize: fontSize.small,
