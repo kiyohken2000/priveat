@@ -31,12 +31,20 @@
 priveat/
 ├── apps/
 │   ├── mobile/   # React Native アプリ本体
-│   └── web/      # 予約（未着手）
+│   └── web/      # ランディングページ（Vite + React + Cloudflare Pages）
 └── docs/
     ├── PROPOSAL_企画書.md       # なぜ作るか
     ├── SPEC_アプリ仕様書.md     # 技術仕様（単一の真実）
     └── PROGRESS_進捗表.md       # フェーズ別チェックリスト
 ```
+
+apps/mobile と apps/web は monorepo workspace では繋がっていません。 作業時はそれぞれのディレクトリに `cd` してから `yarn` / コマンドを実行します。
+
+## 公開 URL
+
+- ランディングページ: https://priveat.pages.dev/
+- プライバシーポリシー: https://priveat.pages.dev/privacy
+- 利用規約: https://priveat.pages.dev/terms
 
 ## はじめに
 
@@ -76,11 +84,22 @@ yarn start
 
 ビルド済みの dev client を実機にインストールしてから Metro に接続します。
 
+### ランディングページ (apps/web)
+
+```bash
+cd apps/web
+yarn install
+yarn dev        # http://localhost:5173/
+yarn build      # dist/ に出力
+yarn deploy     # Cloudflare Pages へデプロイ (要 wrangler ログイン)
+```
+
 ## ドキュメント
 
 - [企画書](docs/PROPOSAL_企画書.md) — 背景・目的・スコープ
 - [仕様書](docs/SPEC_アプリ仕様書.md) — 技術仕様・アーキテクチャ・データモデル
 - [進捗表](docs/PROGRESS_進捗表.md) — フェーズ別の作業チェックリスト
+- [ストア掲載メタデータ](docs/STORE_ストア掲載メタデータ.md) — App Store / Google Play 申請用のコピペテキスト
 
 ## ライセンス・出典
 

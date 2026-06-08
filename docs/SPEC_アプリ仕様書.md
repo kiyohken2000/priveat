@@ -380,3 +380,13 @@ useEffect(() => {
 - [ ] "Priveat" の App Store / Google Play 名称重複・商標確認。
 - [ ] 食品成分表の出典表記をアプリ内に実装（「日本食品標準成分表（八訂）増補2023年から引用」）。
 - [ ] 各OSSライセンスのクレジット表示。
+
+### 公開 URL (ランディングページ・規約)
+
+ストア申請時に登録するメタ情報の URL は以下:
+
+- ランディング: https://priveat.pages.dev/
+- プライバシーポリシー: https://priveat.pages.dev/privacy
+- 利用規約: https://priveat.pages.dev/terms
+
+実装は `apps/web/` (Vite + React + Cloudflare Pages)。 詳細は PROGRESS_進捗表.md Phase 10 を参照。
