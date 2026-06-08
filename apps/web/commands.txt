@@ -1,0 +1,22 @@
+// dev / build / preview
+yarn dev          # http://localhost:5173/ で起動
+yarn build        # tsc -b + vite build。 dist/ に出力
+yarn preview      # build 後の dist/ をローカル確認
+
+// lint
+yarn lint
+
+// Cloudflare Pages
+yarn deploy       # build + Cloudflare Pages priveat にデプロイ (要 wrangler ログイン)
+
+// Wrangler 直接
+npx wrangler login                                                # 初回のみブラウザ認証
+npx wrangler whoami                                               # ログイン状態確認
+npx wrangler pages project list                                   # プロジェクト一覧
+npx wrangler pages deployment list --project-name=priveat         # デプロイ履歴
+npx wrangler pages deployment tail --project-name=priveat         # ログをライブ tail
+
+// 公開 URL
+// https://priveat.pages.dev/
+// https://priveat.pages.dev/privacy
+// https://priveat.pages.dev/terms
