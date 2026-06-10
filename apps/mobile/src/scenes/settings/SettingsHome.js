@@ -1,6 +1,6 @@
 import { useNavigation } from '@react-navigation/native'
 import React from 'react'
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
 import ScreenTemplate from '../../components/ScreenTemplate'
 import { colors, fontSize } from '../../theme'
@@ -93,6 +93,14 @@ export default function SettingsHome() {
           <Image source={images.logo_sm} style={styles.aboutLogo} resizeMode="contain" />
           <Text style={styles.aboutAppName}>Priveat</Text>
           <Text style={styles.aboutVersion}>バージョン {version}</Text>
+          <Pressable
+            onPress={() => Linking.openURL('https://priveat.pages.dev/')}
+            style={({ pressed }) => [styles.aboutLink, pressed && styles.aboutLinkPressed]}
+            hitSlop={8}
+          >
+            <FontIcon name="external-link" size={12} color={colors.lightPurple} />
+            <Text style={styles.aboutLinkText}>公式サイト (priveat.pages.dev)</Text>
+          </Pressable>
           <Text style={styles.aboutCredit}>
             成分データ: 日本食品標準成分表（八訂）増補2023年（文部科学省）から引用
           </Text>
@@ -163,6 +171,22 @@ const styles = StyleSheet.create({
     fontSize: fontSize.small,
     color: colors.gray,
     marginTop: 2,
+  },
+  aboutLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    gap: 6,
+  },
+  aboutLinkPressed: {
+    opacity: 0.5,
+  },
+  aboutLinkText: {
+    fontSize: fontSize.small,
+    color: colors.lightPurple,
+    fontWeight: '600',
   },
   aboutCredit: {
     fontSize: fontSize.small,

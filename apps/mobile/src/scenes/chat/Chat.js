@@ -2789,6 +2789,7 @@ export default function Chat() {
           <Text style={styles.emptyText}>
             食事・体重・運動を送ると、自動で分解してカードにします。
           </Text>
+          <Text style={styles.emptyHowTo}>👇 たとえば、こんなふうに入力してください</Text>
 
           <Text style={styles.sectionLabel}>🍱 食事</Text>
           <View style={styles.exampleBlock}>
@@ -2906,10 +2907,10 @@ export default function Chat() {
         text={inputText}
         placeholder={
           mode === 'coach'
-            ? 'コーチに質問する（例: 今週どうだった？）'
+            ? '入力例: 今週どうだった？（自由に質問できます）'
             : mode === 'recipe'
-              ? '材料リストと食数を入力（例: ひき肉500g 玉ねぎ3個 で5食分のカレー）'
-              : '食事・体重・運動を入力'
+              ? '入力例: ひき肉500gと玉ねぎ3個で5食分のカレー'
+              : '入力例: カツ丼と缶チューハイ2本 / 体重68.5kg / ランニング60分'
         }
         isTyping={llm.isGenerating || parserReloading}
         minComposerHeight={48}
@@ -3217,6 +3218,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 16,
     transform: [{ scaleY: -1 }],
+  },
+  emptyHowTo: {
+    fontSize: fontSize.small,
+    color: colors.lightPurple,
+    textAlign: 'center',
+    fontWeight: '700',
+    marginTop: -8,
+    marginBottom: 14,
   },
   emptyText: {
     fontSize: fontSize.middle,
