@@ -74,6 +74,81 @@
 
 ---
 
+## build-foods-supplementary.js — 文科省 別表 (アミノ酸 / 脂肪酸 / 炭水化物) → JSON
+
+文部科学省 成分表の**別表**を JSON 化してアーカイブ化するスクリプト。
+本表 (`foods.json`) には kcal / PFC / 食塩しか含まれていないため、
+将来「食物繊維 g」「脂質の質 (飽和 vs 不飽和)」「アミノ酸スコア」 などを
+扱いたくなった時に取り込めるよう、変換だけ先にやっておく。
+
+**現状アプリでは未使用**。 出力先も `_temp/xlsx_json/` (gitignored) で、
+`assets/data/` には入らない (= ビルド成果物に同梱されない)。
+
+### 手順
+
+1. **別表 Excel を `_temp/xlsx/` に置く**
+
+   公式: https://www.mext.go.jp/a_menu/syokuhinseibun/
+
+   別表ファイル (アミノ酸 / 脂肪酸 / 炭水化物の各分冊) を全部 `_temp/xlsx/` 配下に置く。
+   `_02` (本表) も含まれていてよいが、本表は `foods.json` と同一内容のため自動でスキップする。
+
+2. **変換**
+
+   ```bash
+   cd apps/mobile
+   yarn build-foods-supplementary
+   ```
+
+   出力: `_temp/xlsx_json/{元ファイル名}.json` (10 ファイル、合計 ~5 MB)
+
+### スキーマ
+
+```json
+{
+  "source": "日本食品標準成分表（八訂）増補2023年 / 2026-03-27 公開版",
+  "table": "炭水化物成分表 (食物繊維)",
+  "source_file": "20260327-mxt_kagsei-mext-000029402_14.xlsx",
+  "generated_at": "...",
+  "count": 1451,
+  "identifiers": ["WATER", "FIBSOL", "FIBINS", "FIB-TDF", ...],
+  "items": [
+    { "food_code": "01001", "name": "アマランサス 玄穀", "category": "01",
+      "WATER": 13.5, "FIB-TDF": 7.4, ... }
+  ]
+}
+```
+
+栄養素キーは**文科省の成分識別子をそのまま採用**している (表ごとに違うので独自マッピングは作らない)。
+将来取り込む時にこちらでフィールド名を決める。
+
+### 主要識別子の早見表
+
+| 表 | 主な識別子 | 意味 |
+|---|---|---|
+| `_04` アミノ酸 (可食部 100g) | `ILE` `LEU` `LYS` `MET` `CYS` `PHE` `TYR` `THR` `TRP` `VAL` `HIS` | 必須アミノ酸 (g/100g) |
+| `_09` 脂肪酸 (可食部 100g) | `FASAT` / `FAMS` / `FAPU` | 飽和 / 一価不飽和 / 多価不飽和 (g/100g) |
+| 〃 | `FAPUN3` / `FAPUN6` | n-3 系 / n-6 系 多価不飽和 (g/100g) |
+| 〃 | `F18D2N6` `F20D5N3` `F22D6N3` | リノール酸 / EPA / DHA など個別脂肪酸 |
+| `_13` 炭水化物 | `STARCH` `GLUS` `FRUS` `SUCS` `LACS` | でんぷん / ブドウ糖 / 果糖 / ショ糖 / 乳糖 |
+| `_14` 食物繊維 | `FIB-TDF` | **総食物繊維 (一番使うやつ)** |
+| 〃 | `FIBSOL` `FIBINS` | 水溶性 / 不溶性 |
+| `_15` 有機酸 | `LACAC` `OXALAC` `ACEAC` | 乳酸 / シュウ酸 / 酢酸 |
+
+### 取り込みたくなった時の手順 (メモ)
+
+例: 食物繊維 (`FIB-TDF`) を `foods.json` に追加する場合
+
+1. `_temp/xlsx_json/20260327-mxt_kagsei-mext-000029402_14.json` を読み込む
+2. `food_code → FIB-TDF` の Map を作る (1451 件、 残り 1087 件は `null`)
+3. `build-foods-json.js` 側で `fiber_per_100g` フィールドを追加して出力
+4. `assets/data/foods.json` のスキーマと seed 側を合わせて更新
+
+別表は 2538 品目の完全集合ではなく**部分集合** (各 442〜1999 件) なので、
+未収載分は `null` 許容 or 別ソース (Slism 等) で補う設計にする必要がある。
+
+---
+
 ## scrape-slism.js + build-slism-foods.js — カロリーSlism スクレイピング
 
 カロリーSlism (https://calorie.slism.jp) をスクレイピングし、完成料理を `foods_slism.json` として同梱する。八訂は素材中心で完成料理 (ラーメン・寿司・パスタ料理・コンビニ商品) のカバーが弱いため、これを補完するのが目的。
