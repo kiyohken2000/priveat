@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import s from './Landing.module.css'
 
@@ -164,10 +164,36 @@ function Phone({
   eager?: boolean
 }) {
   const onZoom = useContext(ZoomContext)
+  const ref = useRef<HTMLButtonElement>(null)
+  const [visible, setVisible] = useState(Boolean(eager))
+  useEffect(() => {
+    if (eager) return
+    const el = ref.current
+    if (!el) return
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisible(true)
+      return
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) {
+            setVisible(true)
+            io.disconnect()
+            break
+          }
+        }
+      },
+      { threshold: 0.15, rootMargin: '0px 0px -80px 0px' },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [eager])
   return (
     <button
+      ref={ref}
       type="button"
-      className={`${s.phone} ${extra ?? ''}`}
+      className={`${s.phone} ${extra ?? ''} ${visible ? s.phoneVisible : ''}`}
       onClick={() => onZoom(src, alt)}
       aria-label={`${alt} を拡大表示`}
     >
@@ -342,11 +368,38 @@ export default function Landing() {
       {/* Closing */}
       <section className={s.closing}>
         <div className={s.closingInner}>
-          <h2 className={s.closingTitle}>もうすぐリリース予定</h2>
+          <h2 className={s.closingTitle}>ダウンロード</h2>
           <p className={s.closingLead}>
-            日本のストアでの配信を準備中です。 詳細はこのページで告知します。
+            App Store で配信中です。 Google Play は審査中です。
           </p>
-          <p className={s.closingMeta}>※ 配信地域は日本のみを予定しています。</p>
+          <div className={s.storeBadges}>
+            <a
+              href="https://apps.apple.com/jp/app/id6777913980"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.storeBadge}
+              aria-label="App Store でダウンロード"
+            >
+              <img src="/badges/appstore.png" alt="App Store でダウンロード" />
+            </a>
+            <span
+              className={`${s.storeBadge} ${s.storeBadgeDisabled}`}
+              aria-label="Google Play は準備中"
+            >
+              <img src="/badges/googleplay.png" alt="Google Play (準備中)" />
+              <span className={s.storeBadgeNote}>準備中</span>
+            </span>
+            <a
+              href="https://buymeacoffee.com/votepurchase"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.storeBadge}
+              aria-label="Buy me a coffee で開発者を応援"
+            >
+              <img src="/badges/bmc-button.png" alt="Buy me a Coffee" />
+            </a>
+          </div>
+          <p className={s.closingMeta}>※ 配信地域は日本のみです。</p>
           <div className={s.closingLinks}>
             <Link to="/privacy">プライバシーポリシー</Link>
             <Link to="/terms">利用規約</Link>
