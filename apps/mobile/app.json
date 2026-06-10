@@ -6,7 +6,7 @@
       "ios",
       "android"
     ],
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/images/logo-sm.png",
     "updates": {
@@ -20,7 +20,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "net.votepurchase.priveat",
-      "buildNumber": "2",
+      "buildNumber": "3",
       "infoPlist": {
         "CFBundleDevelopmentRegion": "ja_JP",
         "ITSAppUsesNonExemptEncryption": false
@@ -33,7 +33,7 @@
     },
     "android": {
       "package": "net.votepurchase.priveat",
-      "versionCode": 2,
+      "versionCode": 3,
       "userInterfaceStyle": "automatic",
       "permissions": [
         "android.permission.VIBRATE",
