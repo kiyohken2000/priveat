@@ -365,6 +365,37 @@ export default function Landing() {
         })}
       </section>
 
+      {/* LINE stickers */}
+      <section className={s.stickers}>
+        <div className={s.stickersInner}>
+          <span className={s.eyebrow}>LINE STICKERS</span>
+          <h2 className={s.stickersTitle}>マスコット「にもにゃん」の LINE スタンプ</h2>
+          <p className={s.stickersLead}>
+            アプリに登場するマスコット「にもにゃん」の LINE スタンプを配信中です。 売上はアプリの開発・運営費に充てさせていただきます。
+          </p>
+          <div className={s.stickerGrid}>
+            {[1, 2, 3, 4, 5].map((n) => (
+              <img
+                key={n}
+                src={`/stickers/sticker_${n}.png`}
+                alt={`にもにゃんスタンプ ${n}`}
+                className={s.stickerImg}
+                loading="lazy"
+                decoding="async"
+              />
+            ))}
+          </div>
+          <a
+            href="https://store.line.me/stickershop/author/5435882/ja"
+            target="_blank"
+            rel="noopener noreferrer"
+            className={s.stickerCta}
+          >
+            LINE STORE で見る
+          </a>
+        </div>
+      </section>
+
       {/* Closing */}
       <section className={s.closing}>
         <div className={s.closingInner}>
