@@ -24,7 +24,7 @@
 
   font: 17px/170% var(--sans);
   letter-spacing: 0.1px;
-  color-scheme: light dark;
+  color-scheme: light;
   color: var(--text);
   background: var(--bg);
   font-synthesis: none;
@@ -34,21 +34,6 @@
 
   @media (max-width: 1024px) {
     font-size: 16px;
-  }
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #c1bdd1;
-    --text-h: #f1eefa;
-    --bg: #16131f;
-    --border: #2e2a3e;
-    --code-bg: #1f1c2c;
-    --accent: #b97aff;
-    --accent-bg: rgba(185, 122, 255, 0.15);
-    --accent-border: rgba(185, 122, 255, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
   }
 }
 
