@@ -2,10 +2,12 @@ import React from 'react'
 import { Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
 import { colors, fontSize } from '../theme'
+import { resolveOcrImageUri } from '../utils/persistImage'
 
 // 永続化済み OCR 画像をフルスクリーン表示するモーダル。
 //   imageUri が null/undefined の場合は「画像なし」プレースホルダ。
 export default function ImagePreviewModal({ visible, imageUri, title, onClose }) {
+  const resolved = resolveOcrImageUri(imageUri)
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.backdrop}>
@@ -17,8 +19,8 @@ export default function ImagePreviewModal({ visible, imageUri, title, onClose })
               <FontIcon name="times" size={20} color={colors.white} />
             </Pressable>
           </View>
-          {imageUri ? (
-            <Image source={{ uri: imageUri }} style={styles.image} resizeMode="contain" />
+          {resolved ? (
+            <Image source={{ uri: resolved }} style={styles.image} resizeMode="contain" />
           ) : (
             <View style={styles.empty}>
               <FontIcon name="image" size={40} color="#888" />

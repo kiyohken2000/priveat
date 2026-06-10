@@ -25,6 +25,7 @@ import { captureFromCamera, pickFromLibrary, runOcr } from '../chat/imageOcr'
 import { parseLabelText } from '../chat/ocrParsers'
 import { useActiveLLM, useActiveModel } from '../../state/modelContext'
 import { estimateUnitForFood } from '../../utils/aiKcal'
+import { resolveOcrImageUri } from '../../utils/persistImage'
 
 const toNum = (v) => {
   if (v == null) return null
@@ -316,7 +317,7 @@ export default function ProductEditScreen() {
       <ScrollView contentContainerStyle={styles.root} keyboardShouldPersistTaps="handled">
         {imageUri ? (
           <View style={styles.imageBox}>
-            <Image source={{ uri: imageUri }} style={styles.image} resizeMode="cover" />
+            <Image source={{ uri: resolveOcrImageUri(imageUri) }} style={styles.image} resizeMode="cover" />
             <Text style={styles.imageHint}>登録時のラベル画像</Text>
           </View>
         ) : null}

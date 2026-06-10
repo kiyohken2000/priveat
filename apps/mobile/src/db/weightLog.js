@@ -1,5 +1,5 @@
 import { getDb } from './index'
-import { deletePersistedImage } from '../utils/persistImage'
+import { deletePersistedImage, resolveOcrImageUri } from '../utils/persistImage'
 
 // weight_log の個別行 CRUD。1日の内訳表示・編集・削除に使う。
 //
@@ -55,6 +55,6 @@ export const deleteWeightLogItem = async (id) => {
   )
   await db.runAsync(`DELETE FROM weight_log WHERE id = ?`, [id])
   if (row?.image_uri) {
-    await deletePersistedImage(row.image_uri)
+    await deletePersistedImage(resolveOcrImageUri(row.image_uri))
   }
 }

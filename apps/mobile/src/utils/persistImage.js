@@ -32,3 +32,27 @@ export const deletePersistedImage = async (uri) => {
     console.warn('[deletePersistedImage] failed:', e?.message ?? e)
   }
 }
+
+// DB に保存された image_uri をレンダリング用に解決する。
+//
+// iOS sandbox 問題対策:
+//   永続化した画像 URI は file:///var/mobile/Containers/Data/Application/<UUID>/Documents/ocr/...
+//   のような絶対パスで DB に焼き付いている。 <UUID> は EAS dev build を再インストール
+//   すると変わるため、 古い絶対パスは解決できなくなる。 ファイル自体は iOS が新コンテナの
+//   Documents/ へ移行するので、 URI の "Documents/" 以降を切り出して現在の
+//   FileSystem.documentDirectory に張り付け直せば描画できる。
+//
+//   将来の登録は相対パス保存に切り替える余地はあるが、 ここでは既存行救済を優先する
+//   薄いレイヤーに留める。
+export const resolveOcrImageUri = (uri) => {
+  if (!uri) return null
+  const s = String(uri)
+  const docDir = FileSystem.documentDirectory
+  if (!docDir) return s
+  if (s.startsWith(docDir)) return s
+  const marker = '/Documents/'
+  const idx = s.indexOf(marker)
+  if (idx === -1) return s
+  const tail = s.slice(idx + marker.length)
+  return `${docDir}${tail}`
+}

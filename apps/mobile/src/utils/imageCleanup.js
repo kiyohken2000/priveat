@@ -1,5 +1,5 @@
 import { getDb } from '../db'
-import { deletePersistedImage } from './persistImage'
+import { deletePersistedImage, resolveOcrImageUri } from './persistImage'
 
 // 一定日数以上前の OCR 画像をディスクから削除し、DB の image_uri を NULL に更新する。
 //   - 対象テーブル: weight_log / energy_log / products
@@ -35,7 +35,7 @@ export const cleanupOldOcrImages = async ({ maxAgeDays = 50 } = {}) => {
         [`-${maxAgeDays} days`],
       )
       for (const row of rows ?? []) {
-        await deletePersistedImage(row.image_uri)
+        await deletePersistedImage(resolveOcrImageUri(row.image_uri))
         try {
           await db.runAsync(
             `UPDATE ${table} SET image_uri = NULL WHERE id = ?`,

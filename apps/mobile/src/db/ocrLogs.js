@@ -1,5 +1,5 @@
 import { getDb } from './index'
-import { deletePersistedImage, persistOcrImage } from '../utils/persistImage'
+import { deletePersistedImage, persistOcrImage, resolveOcrImageUri } from '../utils/persistImage'
 
 // 食品ラベル OCR の結果を products に保存。
 //   name は ID 化のため日時を含める（後で history から識別できるように）。
@@ -91,7 +91,7 @@ const deleteRowWithImage = async (table, id) => {
     [id],
   )
   if (row?.image_uri) {
-    await deletePersistedImage(row.image_uri)
+    await deletePersistedImage(resolveOcrImageUri(row.image_uri))
   }
   await db.runAsync(`DELETE FROM ${table} WHERE id = ?`, [id])
 }

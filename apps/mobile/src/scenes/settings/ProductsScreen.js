@@ -13,6 +13,7 @@ import {
 import FontIcon from 'react-native-vector-icons/FontAwesome'
 import { colors, fontSize } from '../../theme'
 import { listProducts } from '../../db/products'
+import { resolveOcrImageUri } from '../../utils/persistImage'
 
 const formatCreated = (iso) => {
   if (!iso) return ''
@@ -158,7 +159,7 @@ export default function ProductsScreen() {
                 style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
               >
                 {p.image_uri ? (
-                  <Image source={{ uri: p.image_uri }} style={styles.thumb} />
+                  <Image source={{ uri: resolveOcrImageUri(p.image_uri) }} style={styles.thumb} />
                 ) : (
                   <View style={[styles.thumb, styles.thumbPlaceholder]}>
                     <FontIcon name="cube" size={16} color={colors.gray} />
