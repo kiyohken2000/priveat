@@ -11,6 +11,8 @@ import {
   View,
 } from 'react-native'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
+import * as Clipboard from 'expo-clipboard'
+import * as Device from 'expo-device'
 import { colors, fontSize } from '../../theme'
 import { LLM_MODELS } from '../../data/llmModels'
 import { LLM_LLAMA_RN_TEXT_MODELS } from '../../data/llmTextModelsLlamaRn'
@@ -27,6 +29,7 @@ import {
   isLlamaRnTextModelDownloaded,
   downloadLlamaRnTextModel,
   deleteLlamaRnTextModel,
+  getLlamaRnTextModelFileSize,
 } from '../../services/llmTextModelStorage'
 import { runWithLlamaRnText } from '../../state/llmTextOrchestrator'
 import { listDownloadedModelIds, downloadModel } from '../../services/modelStorage'
@@ -78,13 +81,69 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const isLlamaRn = (m) => m.engine === 'llama_rn'
 
+// シェア用のデバイススペック文字列。 expo-device は permission 不要 / 同期プロパティ。
+// 例: "iPhone15,3 / iOS 18.2 / 6144 MB"
+const getDeviceSpec = () => {
+  const parts = []
+  const name = Device.modelName || Device.modelId
+  if (name) parts.push(name)
+  const os = [Device.osName, Device.osVersion].filter(Boolean).join(' ')
+  if (os) parts.push(os)
+  if (Device.totalMemory) {
+    parts.push(`${Math.round(Device.totalMemory / (1024 * 1024))} MB`)
+  }
+  return parts.join(' / ')
+}
+
+const fmtSec = (ms) => ((ms ?? 0) / 1000).toFixed(1)
+
+// 単一結果カードを共有用テキスト 1 ブロックに整形。
+const formatResultBlock = (r) => {
+  const lines = [`- ${r.modelLabel} (${r.engine})`]
+  if (r.error) {
+    lines.push(`  ERROR: ${r.error}`)
+    return lines.join('\n')
+  }
+  if (r.twoStage) {
+    lines.push(
+      `  load ${fmtSec(r.loadMs)}s / stage1 ${fmtSec(r.stage1Ms)}s / stage2 ${fmtSec(r.stage2Ms)}s`,
+    )
+    if (r.kindStage1) lines.push(`  kind: ${r.kindStage1}`)
+  } else {
+    lines.push(`  load ${fmtSec(r.loadMs)}s / gen ${fmtSec(r.genMs)}s`)
+  }
+  if (r.parseResult) {
+    if (r.parseResult.error) {
+      lines.push(`  パース: NG (${r.parseResult.error})`)
+    } else {
+      const items = r.parseResult.items ? ` x${r.parseResult.items.length}` : ''
+      lines.push(`  パース: OK (${r.parseResult.kind}${items})`)
+    }
+  }
+  return lines.join('\n')
+}
+
+// 結果セット全体を共有テキストに整形 (1 件指定で 1 件版も流用)。
+const buildShareText = ({ role, input, results, isTwoStage }) => {
+  const header = `PRIVEAT ベンチマーク [role=${role}${isTwoStage ? ' / 2-stage' : ''}]`
+  const body = results.map(formatResultBlock).join('\n\n')
+  const device = getDeviceSpec()
+  return [
+    header,
+    `入力: ${input}`,
+    '',
+    body,
+    '',
+    '---',
+    device ? `Device: ${device}` : '',
+  ].filter(Boolean).join('\n')
+}
+
 // kind に応じた stage2 プロンプトを返す (本実装と共有 / Chat.js export)。
 const getStage2Prompt = (kind) => getStage2PromptFor(kind)
 
 export default function BenchmarkScreen() {
   const [role, setRole] = useState('parser')
-  // parser 専用: 単発 / 2-stage の切替。 2-stage は kind 分類 → 詳細抽出の 2 段。
-  const [parseMode, setParseMode] = useState('single') // 'single' | '2stage'
   const [input, setInput] = useState(PRESETS.parser[0])
   // 初期選択は空 (DL 状態に依存しない見た目にする。DL 済みの中からユーザーが選ぶ)
   const [selected, setSelected] = useState(new Set())
@@ -359,7 +418,7 @@ export default function BenchmarkScreen() {
     [role, swapToExecutorchModel, modelCtx],
   )
 
-  // 2-stage parser POC: stage1 はルールベース分類器 (LLM 不使用、 0ms 近い)、
+  // 2-stage parser: stage1 はルールベース分類器 (LLM 不使用、 0ms 近い)、
   // stage2 は kind 別のフォーカスされたプロンプトで LLM を 1 回叩く。
   // 戻り値: { loadMs, stage1Ms, stage1Out, kind, stage2Ms, stage2Out, error }
   //   stage1Out にはルール分類のラベル文字列を入れる (UI 表示用)。
@@ -482,7 +541,7 @@ export default function BenchmarkScreen() {
     // ループ内で都度参照したいので、 state とは別にローカルでも保持
     const collected = []
 
-    const isTwoStage = role === 'parser' && parseMode === '2stage'
+    const isTwoStage = role === 'parser'
 
     console.log('================================================================')
     console.log(`====== Benchmark START [role=${role}${isTwoStage ? ' / 2-stage' : ''}] ======`)
@@ -505,6 +564,20 @@ export default function BenchmarkScreen() {
         const engineLabel = isLlamaRn(m) ? 'llama.rn' : 'executorch'
         setProgress({ i, total: targets.length, modelLabel: m.label, phase: 'loading' })
         console.log(`\n--- [${i + 1}/${targets.length}] ${m.label} (${engineLabel}) ---`)
+
+        // llama.rn 経路で「Failed to load model」が出る場合の切り分け用に、
+        // DL ファイルの実 size と期待 size を出す。 実 size が極端に小さい
+        // (期待の 50% 未満 / 数 KB) なら DL が HTML エラーページ等で破損した可能性。
+        if (isLlamaRn(m)) {
+          const actual = getLlamaRnTextModelFileSize(m)
+          const expected = m.main?.sizeBytes ?? 0
+          const actualMb = actual != null ? Math.round(actual / (1024 * 1024)) : null
+          const expectedMb = Math.round(expected / (1024 * 1024))
+          console.log(`[file] actual=${actualMb}MB / expected=${expectedMb}MB (${actual ?? 0} / ${expected} bytes)`)
+          if (actual != null && expected > 0 && actual < expected * 0.5) {
+            console.warn(`[file] DL 破損の疑い: 実サイズが期待の ${Math.round((actual / expected) * 100)}% しかない。削除→再 DL を推奨。`)
+          }
+        }
 
         let entry
         if (isTwoStage) {
@@ -713,7 +786,41 @@ export default function BenchmarkScreen() {
       setProgress(null)
       setRunning(false)
     }
-  }, [running, input, selected, role, parseMode, llm, downloaded, runOneModel, runTwoStage, setCoachModelId, setCurrentRole])
+  }, [running, input, selected, role, llm, downloaded, runOneModel, runTwoStage, setCoachModelId, setCurrentRole])
+
+  const onCopyAllResults = useCallback(async () => {
+    if (results.length === 0) return
+    try {
+      const text = buildShareText({
+        role,
+        input: input.trim(),
+        results,
+        isTwoStage: role === 'parser',
+      })
+      await Clipboard.setStringAsync(text)
+      Alert.alert('コピーしました', `${results.length} 件の結果をクリップボードにコピーしました。`)
+    } catch (e) {
+      Alert.alert('コピー失敗', e?.message ?? String(e))
+    }
+  }, [results, role, input])
+
+  const onCopyOneResult = useCallback(
+    async (r) => {
+      try {
+        const text = buildShareText({
+          role,
+          input: input.trim(),
+          results: [r],
+          isTwoStage: Boolean(r.twoStage),
+        })
+        await Clipboard.setStringAsync(text)
+        Alert.alert('コピーしました', `${r.modelLabel} の結果をコピーしました。`)
+      } catch (e) {
+        Alert.alert('コピー失敗', e?.message ?? String(e))
+      }
+    },
+    [role, input],
+  )
 
   const renderExecutorchModelRow = (m) => {
     const isDownloaded = downloaded[m.id]
@@ -867,35 +974,10 @@ export default function BenchmarkScreen() {
         </View>
 
         {role === 'parser' && (
-          <>
-            <Text style={styles.sectionLabel}>parser モード</Text>
-            <View style={styles.roleRow}>
-              <TouchableOpacity
-                onPress={() => !running && setParseMode('single')}
-                disabled={running}
-                style={[styles.roleBtn, parseMode === 'single' && styles.roleBtnActive, running && styles.disabled]}
-              >
-                <Text style={[styles.roleBtnText, parseMode === 'single' && styles.roleBtnTextActive]}>
-                  単発
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => !running && setParseMode('2stage')}
-                disabled={running}
-                style={[styles.roleBtn, parseMode === '2stage' && styles.roleBtnActive, running && styles.disabled]}
-              >
-                <Text style={[styles.roleBtnText, parseMode === '2stage' && styles.roleBtnTextActive]}>
-                  2-stage (POC)
-                </Text>
-              </TouchableOpacity>
-            </View>
-            {parseMode === '2stage' && (
-              <Text style={styles.sectionHint}>
-                stage 1 はルール分類器 (正規表現、 LLM 不使用)、 stage 2 で kind 別の詳細抽出。
-                food / weight / activity / recipe を stage 2 で処理 (unknown はスキップ)。
-              </Text>
-            )}
-          </>
+          <Text style={styles.sectionHint}>
+            parser は 2-stage 構成です。 stage 1 はルール分類器 (正規表現、 LLM 不使用)、
+            stage 2 で kind 別の詳細抽出 (food / weight / activity / recipe; unknown はスキップ)。
+          </Text>
         )}
 
         <Text style={styles.sectionLabel}>テスト入力</Text>
@@ -968,7 +1050,23 @@ export default function BenchmarkScreen() {
 
         {results.length > 0 && (
           <View>
-            <Text style={styles.sectionLabel}>結果</Text>
+            <View style={styles.resultsHeaderRow}>
+              <Text style={styles.sectionLabel}>結果</Text>
+              <TouchableOpacity
+                onPress={onCopyAllResults}
+                disabled={running}
+                style={[styles.copyAllBtn, running && styles.disabled]}
+              >
+                <FontIcon name="copy" size={12} color={colors.white} />
+                <Text style={styles.copyAllBtnText}>全結果コピー</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.deviceChip}>
+              <FontIcon name="mobile" size={12} color={colors.darkPurple} />
+              <Text style={styles.deviceChipText} numberOfLines={2}>
+                {getDeviceSpec() || 'デバイス情報取得不可'}
+              </Text>
+            </View>
             {results.map((r, idx) => (
               <View key={`${r.modelId}-${idx}`} style={styles.resultCard}>
                 <View style={styles.resultHeader}>
@@ -976,10 +1074,19 @@ export default function BenchmarkScreen() {
                     {r.modelLabel}{' '}
                     <Text style={styles.resultEngine}>({r.engine})</Text>
                   </Text>
-                  <Text style={styles.resultMeta}>
-                    {r.loadMs != null ? `load ${(r.loadMs / 1000).toFixed(1)}s` : ''}
-                    {r.genMs != null ? ` / gen ${(r.genMs / 1000).toFixed(1)}s` : ''}
-                  </Text>
+                  <View style={styles.resultHeaderRight}>
+                    <Text style={styles.resultMeta}>
+                      {r.loadMs != null ? `load ${(r.loadMs / 1000).toFixed(1)}s` : ''}
+                      {r.genMs != null ? ` / gen ${(r.genMs / 1000).toFixed(1)}s` : ''}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => onCopyOneResult(r)}
+                      hitSlop={6}
+                      style={styles.copyOneBtn}
+                    >
+                      <FontIcon name="copy" size={14} color={colors.lightPurple} />
+                    </TouchableOpacity>
+                  </View>
                 </View>
                 {r.error ? (
                   <Text style={styles.resultError}>エラー: {r.error}</Text>
@@ -1059,6 +1166,25 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 16,
     marginBottom: 8,
+  },
+  deviceChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#efedf7',
+    alignSelf: 'flex-start',
+    maxWidth: '100%',
+    marginTop: 8,
+    marginBottom: 10,
+  },
+  deviceChipText: {
+    fontSize: fontSize.small,
+    color: colors.darkPurple,
+    fontWeight: '600',
+    flexShrink: 1,
   },
   sectionHint: {
     fontSize: fontSize.small,
@@ -1242,6 +1368,25 @@ const styles = StyleSheet.create({
     fontSize: fontSize.middle,
     fontWeight: '700',
   },
+  resultsHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  copyAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: colors.lightPurple,
+  },
+  copyAllBtnText: {
+    fontSize: 11,
+    color: colors.white,
+    fontWeight: '700',
+  },
   resultCard: {
     backgroundColor: colors.white,
     borderRadius: 8,
@@ -1253,13 +1398,26 @@ const styles = StyleSheet.create({
   resultHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'baseline',
+    alignItems: 'center',
     marginBottom: 6,
+    gap: 8,
+  },
+  resultHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 0,
+  },
+  copyOneBtn: {
+    paddingHorizontal: 4,
+    paddingVertical: 2,
   },
   resultModel: {
     fontSize: fontSize.middle,
     color: colors.darkPurple,
     fontWeight: '700',
+    flex: 1,
+    flexShrink: 1,
   },
   resultEngine: {
     fontSize: fontSize.small,

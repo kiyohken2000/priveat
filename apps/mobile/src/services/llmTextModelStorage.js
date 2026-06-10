@@ -33,6 +33,13 @@ export const isLlamaRnTextModelDownloaded = async (model) => {
   return !!file.exists
 }
 
+// 実機の DL 済みファイル size を返す (診断用)。未 DL のときは null。
+export const getLlamaRnTextModelFileSize = (model) => {
+  const file = getFileInstance(model)
+  if (!file.exists) return null
+  return file.size ?? null
+}
+
 // アクティブな AbortController を modelId で覚えておく (cancel 用)。
 const activeDownloads = new Map()
 
