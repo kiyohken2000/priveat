@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import {
   ActivityIndicator,
+  Pressable,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -9,6 +10,7 @@ import {
 } from 'react-native'
 import { colors, fontSize } from '../../theme'
 import FoodNameInput from '../../components/FoodNameInput'
+import NumericKeypadModal from '../../components/NumericKeypadModal'
 
 const PORTIONS = [
   { value: 'small', label: '少なめ', factor: 0.7 },
@@ -33,6 +35,8 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
   const meta = portionMeta(item.portion)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(item.name ?? '')
+  // 数値テンキー モーダル: open かどうか + 起動時のフォーカス対象 ('quantity' | 'kcal')。
+  const [keypad, setKeypad] = useState({ open: false, mode: 'quantity' })
 
   const startEdit = () => {
     setDraft(item.name ?? '')
@@ -49,6 +53,37 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
   const cancelEdit = () => {
     setDraft(item.name ?? '')
     setEditing(false)
+  }
+
+  const openKeypad = (mode) => setKeypad({ open: true, mode })
+  const closeKeypad = () => setKeypad((s) => ({ ...s, open: false }))
+
+  // テンキーモーダル確定。
+  //   - 数量が変わったら patch.quantity を反映 (現状の PRIVEAT は数量変更で kcal を
+  //     自動スケールしない。 portion セグメントが kcal を担うため二重制御回避。
+  //     portion 撤廃後の PR で 「数量 × 単位kcal」 モデルに統一予定)。
+  //   - kcal を手で打った場合は patch.baseKcal を逆算 (打った kcal ÷ portion factor) して
+  //     セット、 kcalSource='manual' で 「再計算で上書きしない」 印を立てる。
+  const onKeypadSubmit = ({ quantity: qNext, kcal: kNext }) => {
+    const patch = {}
+    const qNumNext = qNext === '' ? null : parseFloat(qNext)
+    const qCurrent = item.quantity ?? null
+    if (qNext === '' && qCurrent != null) {
+      patch.quantity = null
+    } else if (qNumNext != null && !Number.isNaN(qNumNext) && qNumNext !== qCurrent) {
+      patch.quantity = qNumNext
+    }
+    const kNumNext = kNext === '' ? null : parseInt(kNext, 10)
+    const kCurrent = kcal ?? null
+    if (kNumNext != null && !Number.isNaN(kNumNext) && kNumNext !== kCurrent) {
+      const factor = portionMeta(item.portion).factor || 1
+      patch.baseKcal = kNumNext / factor
+      patch.kcalSource = 'manual'
+    }
+    if (Object.keys(patch).length > 0) {
+      onUpdateItem?.(messageId, item.id, patch)
+    }
+    closeKeypad()
   }
 
   return (
@@ -82,13 +117,31 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
             <Text style={styles.name}>{item.name}</Text>
           </TouchableOpacity>
         )}
-        <Text style={styles.detail}>
-          {item.quantity}
-          {item.unit} · {kcal == null ? '— kcal' : `${kcal} kcal`}
-          {kcal != null && item.kcalSource === 'llm_estimate' ? (
-            <Text style={styles.estimateBadge}>（推定）</Text>
-          ) : null}
-        </Text>
+        <View style={styles.detailRow}>
+          <Pressable
+            onPress={() => openKeypad('quantity')}
+            hitSlop={6}
+            style={({ pressed }) => pressed && styles.detailPressed}
+          >
+            <Text style={[styles.detail, styles.detailTappable]}>
+              {item.quantity ?? '—'}
+              {item.unit ?? ''}
+            </Text>
+          </Pressable>
+          <Text style={styles.detail}> · </Text>
+          <Pressable
+            onPress={() => openKeypad('kcal')}
+            hitSlop={6}
+            style={({ pressed }) => pressed && styles.detailPressed}
+          >
+            <Text style={[styles.detail, styles.detailTappable]}>
+              {kcal == null ? '— kcal' : `${kcal} kcal`}
+              {kcal != null && item.kcalSource === 'llm_estimate' ? (
+                <Text style={styles.estimateBadge}>（推定）</Text>
+              ) : null}
+            </Text>
+          </Pressable>
+        </View>
         {item.matchedName ? (
           <Text style={styles.matched} numberOfLines={1}>
             ※ {item.matchedName}
@@ -119,6 +172,16 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
           <Text style={styles.deleteText}>×</Text>
         </TouchableOpacity>
       )}
+      <NumericKeypadModal
+        visible={keypad.open}
+        subtitle={item.name || undefined}
+        initialMode={keypad.mode}
+        quantityValue={item.quantity != null ? String(item.quantity) : ''}
+        quantityUnit={item.unit ?? ''}
+        kcalValue={kcal != null ? String(kcal) : ''}
+        onSubmit={onKeypadSubmit}
+        onClose={closeKeypad}
+      />
     </View>
   )
 }
@@ -199,7 +262,7 @@ export default function FoodCard({
           )}
         </TouchableOpacity>
       ) : null}
-      <Text style={styles.hint}>料理名タップで編集 / ピルで分量 / × で削除</Text>
+      <Text style={styles.hint}>料理名 / 数量 / kcal タップで編集 / ピルで分量 / × で削除</Text>
     </View>
   )
 }
@@ -249,6 +312,17 @@ const styles = StyleSheet.create({
     color: colors.gray,
     marginTop: 2,
   },
+  detailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  // タップで開けることをほんのり示すため、 数量 / kcal だけ薄い下線を入れる。
+  detailTappable: {
+    textDecorationLine: 'underline',
+    textDecorationColor: colors.grayFourth,
+  },
+  detailPressed: { opacity: 0.5 },
   matched: {
     fontSize: fontSize.small,
     color: colors.darkPurple,

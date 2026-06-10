@@ -1924,6 +1924,7 @@ export default function Chat() {
 
       const patch = {}
       let nextName = before.name
+      let nextQuantity = before.quantity ?? null
       let nextBaseKcal = before.baseKcal
       let nextMatchedId = before.matchedFoodId ?? null
       let nextMatchedName = before.matchedName ?? null
@@ -1969,6 +1970,23 @@ export default function Chat() {
         nextPortion = updates.portion ?? 'normal'
         patch.portion = nextPortion
       }
+      // NumericKeypadModal からの数量 / kcal 直接編集 (PR1)。
+      //   - quantity 変更は kcal を自動スケールしない (portion セグメントが kcal 担当の
+      //     現状仕様に従う)。 portion 撤廃の PR2 で 「数量 × 単位kcal」 に統一する想定。
+      //   - kcal 手入力は呼び元 (FoodCard) が baseKcal を portion factor で逆算済みで
+      //     渡してくる。 ここでは patch / DB に流すだけ。
+      if ('quantity' in updates) {
+        nextQuantity = updates.quantity ?? null
+        patch.quantity = nextQuantity
+      }
+      if ('baseKcal' in updates) {
+        nextBaseKcal = updates.baseKcal
+        patch.baseKcal = nextBaseKcal
+      }
+      if ('kcalSource' in updates) {
+        nextKcalSource = updates.kcalSource ?? null
+        patch.kcalSource = nextKcalSource
+      }
       if (Object.keys(patch).length === 0) return
 
       applyFoodItemPatch(messageId, itemId, patch)
@@ -1977,6 +1995,7 @@ export default function Chat() {
         try {
           await updateFoodLogItem(before.foodLogId, {
             name: nextName,
+            quantity: nextQuantity,
             portion: nextPortion,
             baseKcal: nextBaseKcal,
             matchedFoodId: nextMatchedId,

@@ -18,6 +18,7 @@ import { getFoodLogItem, updateFoodLogItem } from '../../db/foodLogActions'
 import { computeKcalFromMatch, findBestFood } from '../../db/search'
 import { portionFactor } from '../../db/foodLog'
 import FoodNameInput from '../../components/FoodNameInput'
+import NumericKeypadModal from '../../components/NumericKeypadModal'
 import { useActiveLLM, useActiveModel } from '../../state/modelContext'
 import { estimateKcalForFood } from '../../utils/aiKcal'
 
@@ -52,6 +53,8 @@ export default function EditFoodScreen() {
   const [kcal, setKcal] = useState('')
   const [eatenAt, setEatenAt] = useState(new Date())
   const [pickerVisible, setPickerVisible] = useState(false)
+  // 数値テンキー モーダル: open かどうかと、 起動時のフォーカス対象 ('quantity' | 'kcal')。
+  const [keypad, setKeypad] = useState({ open: false, mode: 'quantity' })
   // kcal の出どころモード:
   //   - 'auto'         : DB 再計算追従 (recomputed が反映されたら kcal 上書き)
   //   - 'manual'       : ユーザー手入力 (DB 再計算を反映しない)
@@ -211,6 +214,19 @@ export default function EditFoodScreen() {
     }
   }
 
+  const openKeypad = (mode) => setKeypad({ open: true, mode })
+  const closeKeypad = () => setKeypad((s) => ({ ...s, open: false }))
+  const onKeypadSubmit = ({ quantity: qNext, kcal: kNext }) => {
+    // 数量が変わったら反映 (re-compute デバウンスで auto モードなら kcal も追従)。
+    // kcal は手打ちが入った扱いで manual モード固定。 空文字なら手入力クリア = auto に戻す。
+    if (qNext !== quantity) setQuantity(qNext)
+    if (kNext !== kcal) {
+      setKcal(kNext)
+      setKcalMode(kNext === '' ? 'auto' : 'manual')
+    }
+    closeKeypad()
+  }
+
   const onSave = async () => {
     if (busy) return
     if (!name.trim()) {
@@ -290,14 +306,23 @@ export default function EditFoodScreen() {
         <View style={styles.row}>
           <View style={styles.flex1}>
             <Field label="数量">
-              <TextInput
-                value={quantity}
-                onChangeText={setQuantity}
-                keyboardType="decimal-pad"
-                placeholder="例: 1"
-                placeholderTextColor={colors.gray}
-                style={styles.input}
-              />
+              <Pressable
+                onPress={() => openKeypad('quantity')}
+                style={({ pressed }) => [
+                  styles.input,
+                  styles.tappableInput,
+                  pressed && styles.btnPressed,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.tappableInputText,
+                    !quantity && styles.tappableInputPlaceholder,
+                  ]}
+                >
+                  {quantity || '例: 1'}
+                </Text>
+              </Pressable>
             </Field>
           </View>
           <View style={[styles.flex1, { marginLeft: 12 }]}>
@@ -323,17 +348,24 @@ export default function EditFoodScreen() {
 
         <Field label="カロリー (kcal)">
           <View style={styles.kcalRow}>
-            <TextInput
-              value={kcal}
-              onChangeText={(v) => {
-                setKcal(v)
-                setKcalMode('manual')
-              }}
-              keyboardType="number-pad"
-              placeholder="例: 250"
-              placeholderTextColor={colors.gray}
-              style={[styles.input, styles.kcalInput]}
-            />
+            <Pressable
+              onPress={() => openKeypad('kcal')}
+              style={({ pressed }) => [
+                styles.input,
+                styles.kcalInput,
+                styles.tappableInput,
+                pressed && styles.btnPressed,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.tappableInputText,
+                  !kcal && styles.tappableInputPlaceholder,
+                ]}
+              >
+                {kcal || '例: 250'}
+              </Text>
+            </Pressable>
             <Pressable
               onPress={() => {
                 setKcalMode('auto')
@@ -422,6 +454,17 @@ export default function EditFoodScreen() {
           cancelTextIOS="キャンセル"
         />
 
+        <NumericKeypadModal
+          visible={keypad.open}
+          subtitle={name || undefined}
+          initialMode={keypad.mode}
+          quantityValue={quantity}
+          quantityUnit={unit}
+          kcalValue={kcal}
+          onSubmit={onKeypadSubmit}
+          onClose={closeKeypad}
+        />
+
         <Pressable
           onPress={onSave}
           disabled={busy}
@@ -480,6 +523,11 @@ const styles = StyleSheet.create({
     color: colors.darkPurple,
     backgroundColor: '#fafafe',
   },
+  // 数量 / kcal の入力枠を Pressable で代用するときに使う。
+  // styles.input と同じ枠を引き継ぎつつ、 中央寄せ + 文字色を Text 側で当てる。
+  tappableInput: { justifyContent: 'center', minHeight: 40 },
+  tappableInputText: { fontSize: fontSize.middle, color: colors.darkPurple },
+  tappableInputPlaceholder: { color: colors.gray },
   segment: {
     flexDirection: 'row',
     borderWidth: 1,
