@@ -16,7 +16,6 @@ import DateTimePickerModal from 'react-native-modal-datetime-picker'
 import { colors, fontSize } from '../../theme'
 import { getFoodLogItem, updateFoodLogItem } from '../../db/foodLogActions'
 import { computeKcalFromMatch, findBestFood } from '../../db/search'
-import { portionFactor } from '../../db/foodLog'
 import FoodNameInput from '../../components/FoodNameInput'
 import NumericKeypadModal from '../../components/NumericKeypadModal'
 import { useActiveLLM, useActiveModel } from '../../state/modelContext'
@@ -49,7 +48,6 @@ export default function EditFoodScreen() {
   const [name, setName] = useState('')
   const [quantity, setQuantity] = useState('')
   const [unit, setUnit] = useState('')
-  const [portion, setPortion] = useState('normal')
   const [kcal, setKcal] = useState('')
   const [eatenAt, setEatenAt] = useState(new Date())
   const [pickerVisible, setPickerVisible] = useState(false)
@@ -93,7 +91,6 @@ export default function EditFoodScreen() {
       setName(row.name ?? '')
       setQuantity(row.quantity != null ? String(row.quantity) : '')
       setUnit(row.unit ?? '')
-      setPortion(row.portion ?? 'normal')
       setKcal(row.kcal != null ? String(row.kcal) : '')
       setEatenAt(new Date(row.eaten_at))
     } catch (err) {
@@ -107,9 +104,8 @@ export default function EditFoodScreen() {
     load()
   }, [load])
 
-  // name / quantity / unit / portion 変更で kcal を再計算（300ms デバウンス）。
-  //   - findBestFood で foods 表を引き、computeKcalFromMatch で baseKcal を算出
-  //   - portionFactor を掛けた最終 kcal を recomputed に保持
+  // name / quantity / unit 変更で kcal を再計算 (300ms デバウンス)。
+  //   - findBestFood で foods 表を引き、 computeKcalFromMatch で kcal を算出
   //   - kcalMode='auto' のときのみ実際に kcal フィールドへ反映
   useEffect(() => {
     if (!loaded) return
@@ -128,21 +124,20 @@ export default function EditFoodScreen() {
           picked && picked.name === name.trim()
             ? picked
             : await findBestFood(name.trim())
-        const baseKcal = computeKcalFromMatch(matched, qty, unit.trim(), name.trim())
+        const computed = computeKcalFromMatch(matched, qty, unit.trim(), name.trim())
         if (seq !== recomputeSeqRef.current) return // 古い結果は破棄
-        if (baseKcal == null) {
+        if (computed == null) {
           setRecomputed(null)
           return
         }
-        const final = Math.round(baseKcal * portionFactor(portion))
-        setRecomputed(final)
-        if (kcalMode === 'auto') setKcal(String(final))
+        setRecomputed(computed)
+        if (kcalMode === 'auto') setKcal(String(computed))
       } catch (e) {
         console.warn('[editFood] recompute failed:', e)
       }
     }, 300)
     return () => clearTimeout(handle)
-  }, [loaded, name, quantity, unit, portion, kcalMode])
+  }, [loaded, name, quantity, unit, kcalMode])
 
   // 「AI 推定」ボタン: parser モデル (0.6B) では知識不足で精度低 (家系ラーメン → 370 kcal) のため、
   // 一時的に coach モデル (1.7B+) にスワップして推定。終わったら元のロールに戻す。
@@ -216,13 +211,20 @@ export default function EditFoodScreen() {
 
   const openKeypad = (mode) => setKeypad({ open: true, mode })
   const closeKeypad = () => setKeypad((s) => ({ ...s, open: false }))
-  const onKeypadSubmit = ({ quantity: qNext, kcal: kNext }) => {
-    // 数量が変わったら反映 (re-compute デバウンスで auto モードなら kcal も追従)。
-    // kcal は手打ちが入った扱いで manual モード固定。 空文字なら手入力クリア = auto に戻す。
+  const onKeypadSubmit = ({ quantity: qNext, kcal: kNext, kcalTouched }) => {
+    // 数量が変わったら反映。
+    //   - auto モードのときは数量編集後の useEffect 再計算で kcal が DB から上書きされるので、
+    //     モーダル側の auto-scale 結果は無視する。
+    //   - manual / llm_estimate モードのときはモーダルの auto-scale を尊重して
+    //     新しい数量に応じた kcal を採用する (kcal_source は維持)。
+    //   - kcalTouched=true は 「ユーザーが kcal キーを直接叩いた」 印。 この場合は
+    //     'manual' モードに切り替える (空文字なら 'auto' に戻す)。
     if (qNext !== quantity) setQuantity(qNext)
-    if (kNext !== kcal) {
+    if (kcalTouched) {
       setKcal(kNext)
       setKcalMode(kNext === '' ? 'auto' : 'manual')
+    } else if (kcalMode !== 'auto' && kNext !== kcal) {
+      setKcal(kNext)
     }
     closeKeypad()
   }
@@ -253,7 +255,6 @@ export default function EditFoodScreen() {
         name: name.trim(),
         quantity: toNum(quantity),
         unit: unit.trim() || null,
-        portion,
         kcal: toNum(kcal),
         kcal_source: kcalSource,
       })
@@ -338,14 +339,6 @@ export default function EditFoodScreen() {
           </View>
         </View>
 
-        <Field label="量">
-          <View style={styles.segment}>
-            <SegmentButton label="少なめ" active={portion === 'small'} onPress={() => setPortion('small')} />
-            <SegmentButton label="並" active={portion === 'normal'} onPress={() => setPortion('normal')} />
-            <SegmentButton label="多め" active={portion === 'large'} onPress={() => setPortion('large')} />
-          </View>
-        </Field>
-
         <Field label="カロリー (kcal)">
           <View style={styles.kcalRow}>
             <Pressable
@@ -423,7 +416,7 @@ export default function EditFoodScreen() {
                 ? 'AI 推定値です（参考目安）'
                 : kcalMode === 'auto'
                   ? recomputed != null
-                    ? '数量・単位・量に応じて自動再計算しています'
+                    ? '数量・単位に応じて自動再計算しています'
                     : '一致する食品が見つかりません。「AI推定」で推定値を入れられます'
                   : recomputed != null
                     ? `手入力中（自動値: ${recomputed} kcal → 「再計算」で反映）`
@@ -488,19 +481,6 @@ const Field = ({ label, children }) => (
   </View>
 )
 
-const SegmentButton = ({ label, active, onPress }) => (
-  <Pressable
-    onPress={onPress}
-    style={({ pressed }) => [
-      styles.segmentBtn,
-      active && styles.segmentBtnActive,
-      pressed && styles.btnPressed,
-    ]}
-  >
-    <Text style={[styles.segmentBtnText, active && styles.segmentBtnTextActive]}>{label}</Text>
-  </Pressable>
-)
-
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.white },
   flex1: { flex: 1 },
@@ -528,22 +508,6 @@ const styles = StyleSheet.create({
   tappableInput: { justifyContent: 'center', minHeight: 40 },
   tappableInputText: { fontSize: fontSize.middle, color: colors.darkPurple },
   tappableInputPlaceholder: { color: colors.gray },
-  segment: {
-    flexDirection: 'row',
-    borderWidth: 1,
-    borderColor: '#dcd9ec',
-    borderRadius: 8,
-    overflow: 'hidden',
-  },
-  segmentBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    alignItems: 'center',
-    backgroundColor: '#fafafe',
-  },
-  segmentBtnActive: { backgroundColor: colors.lightPurple },
-  segmentBtnText: { fontSize: fontSize.middle, color: colors.darkPurple },
-  segmentBtnTextActive: { color: colors.white, fontWeight: '600' },
   kcalRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   kcalInput: { flex: 1 },
   kcalHint: { fontSize: fontSize.small, color: colors.gray, marginTop: 4 },

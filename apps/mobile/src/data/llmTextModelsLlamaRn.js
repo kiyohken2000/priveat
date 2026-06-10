@@ -37,8 +37,9 @@ export const LLM_LLAMA_RN_TEXT_MODELS = [
   // 認証なしで DL するため community 配布 (bartowski) を使う。 元となる QAT bf16 は
   // Google 公式なので品質は公式 QAT と同等。
   //
-  // 採用理由 (parser 用途): ベンチで「カツ丼 1杯 大盛り」のような portion 検出が
-  // LFM2.5-JP より詳細だった。 低スペック端末で LFM2.5 が動かない / 遅い場合の選択肢。
+  // 採用理由 (parser 用途): ベンチで「カツ丼 1杯 大盛り」のような分量ニュアンス検出が
+  // LFM2.5-JP より詳細だった (estimated_kcal にも反映される)。 低スペック端末で LFM2.5 が
+  // 動かない / 遅い場合の選択肢。
   // 非採用 (coach 用途): 日本語の自然さが LFM2.5-JP より明確に劣る (「ランニングをしっかり摂り」
   // のような不自然表現や「頑張って」連発)。 coach には LFM2.5-JP を使うべき。
   // Gemma 4 E2B も検討したが、 thinking mode で n_predict を食い潰して JSON/応答が出ない

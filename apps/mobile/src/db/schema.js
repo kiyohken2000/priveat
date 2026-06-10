@@ -220,6 +220,17 @@ export const MIGRATIONS = [
         ON recipe_ingredients(recipe_id);
     `,
   },
+  // v9: portion (少なめ/並/多め) 概念を撤廃。
+  //   「数量 × 1単位あたり kcal」 (あすけん風) に統一する PR2 の DB 側変更。
+  //   旧モデルでは food_log.kcal は baseKcal × portionFactor の結果として既に保存
+  //   されているので、 kcal 値はそのまま維持して portion カラムだけ削る。
+  //   SQLite 3.35+ の DROP COLUMN を使う。 expo-sqlite は十分新しい。
+  {
+    version: 9,
+    sql: `
+      ALTER TABLE food_log DROP COLUMN portion;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version

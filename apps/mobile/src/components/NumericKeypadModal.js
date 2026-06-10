@@ -1,10 +1,17 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native'
 import { colors, fontSize } from '../theme'
 
 // あすけん風の数値入力モーダル。 OS 標準キーボードを使わずに自作テンキーで
 // 数量 / kcal を 1 画面で打てるようにする。 トグルで 「数量」 と 「kcal」 の
-// どちらに入力中かを切り替える (値の換算はしない — それぞれ独立した文字列を保持)。
+// どちらに入力中かを切り替える。
+//
+// kcal の自動換算 (perUnitKcal):
+//   - perUnitKcal prop が来ているか、 quantity + kcal の初期値から計算できれば、
+//     1 単位あたりの kcal を内部状態で持って auto-scale する。
+//   - quantity を編集すると kcal = round(quantity × perUnitKcal) で自動更新。
+//   - kcal を編集すると perUnitKcal = kcal / quantity に更新される (ヒントもこれに追随)。
+//   - perUnitKcal が無いケース (数量も kcal も未入力 等) はトグルで独立フィールド扱い。
 //
 // Props:
 //   visible        : 表示制御
@@ -14,16 +21,10 @@ import { colors, fontSize } from '../theme'
 //   quantityValue  : 数量の初期値 (string)
 //   quantityUnit   : 数量の単位ラベル ('杯', '個', 'g' 等)
 //   kcalValue      : kcal の初期値 (string)
-//   perUnitKcal    : 1 単位あたりの kcal (目安バナー用、 不明なら null)
+//   perUnitKcal    : 1 単位あたりの kcal (省略時は quantity+kcal から派生を試みる)
 //   allowToggle    : モード切替ボタンを出すか (デフォルト true)
 //   onSubmit       : OK 時に { quantity, kcal } を渡す
 //   onClose        : 閉じる
-//
-// 設計判断:
-//   - kcal は整数のみ。 quantity は小数点 1 個まで許可。
-//   - トグル切替時に値の換算はしない。 PRIVEAT の数量 / kcal は独立フィールド扱い
-//     (現状 portion セグメントが kcal スケーリングを担っているので、 ここで換算すると
-//      二重制御になる)。
 
 const KEYS = [
   ['7', '8', '9'],
@@ -51,6 +52,17 @@ const removeLast = (current) => {
   return current.slice(0, -1)
 }
 
+const derivePerUnit = (qtyStr, kcalStr, propPerUnit) => {
+  if (propPerUnit != null) {
+    const n = Number(propPerUnit)
+    if (!Number.isNaN(n) && n > 0) return n
+  }
+  const q = parseFloat(String(qtyStr ?? ''))
+  const k = parseFloat(String(kcalStr ?? ''))
+  if (Number.isFinite(q) && q > 0 && Number.isFinite(k) && k >= 0) return k / q
+  return null
+}
+
 export default function NumericKeypadModal({
   visible,
   title = '分量・カロリー',
@@ -67,6 +79,17 @@ export default function NumericKeypadModal({
   const [mode, setMode] = useState(initialMode)
   const [qtyDraft, setQtyDraft] = useState(String(quantityValue ?? ''))
   const [kcalDraft, setKcalDraft] = useState(String(kcalValue ?? ''))
+  // 内部状態の 1 単位あたり kcal。 quantity 編集 → kcal 自動更新、
+  // kcal 編集 → perUnit を再算出、 という双方向リンクを担う。
+  const initialPerUnit = useMemo(
+    () => derivePerUnit(quantityValue, kcalValue, perUnitKcal),
+    [visible], // eslint-disable-line
+  )
+  const [perUnit, setPerUnit] = useState(initialPerUnit)
+  // どのモードで打鍵が起きたかを追う。 kcalTouched=true なら呼び元側で
+  // kcalSource='manual' を立てる根拠になる (auto-scale だけで変わった kcal は除外したい)。
+  const [qtyTouched, setQtyTouched] = useState(false)
+  const [kcalTouched, setKcalTouched] = useState(false)
 
   // visible が立ち上がる瞬間に props で渡された値で再初期化する。
   // 親側で値が更新されてもモーダルを開き直さない限り反映しない (編集中の打鍵保護)。
@@ -76,35 +99,68 @@ export default function NumericKeypadModal({
       setMode(initialMode)
       setQtyDraft(String(quantityValue ?? ''))
       setKcalDraft(String(kcalValue ?? ''))
+      setPerUnit(derivePerUnit(quantityValue, kcalValue, perUnitKcal))
+      setQtyTouched(false)
+      setKcalTouched(false)
     }
   }, [visible]) // eslint-disable-line
 
   const current = mode === 'quantity' ? qtyDraft : kcalDraft
-  const setCurrent = (next) => {
-    if (mode === 'quantity') setQtyDraft(next)
-    else setKcalDraft(next)
-  }
   const unitLabel = mode === 'quantity' ? quantityUnit || '' : 'kcal'
   const allowDecimal = mode === 'quantity'
 
   const handleKey = (k) => {
-    if (k === 'back') setCurrent(removeLast(current))
-    else setCurrent(appendDigit(current, k, allowDecimal))
+    if (mode === 'quantity') {
+      const next = k === 'back' ? removeLast(qtyDraft) : appendDigit(qtyDraft, k, true)
+      setQtyDraft(next)
+      setQtyTouched(true)
+      // 1 単位 kcal がわかっていれば数量編集に応じて kcal を自動再計算。
+      // 空文字 (= 数量未入力) は 0 ではなく空のままにする (kcal 表示も空)。
+      if (perUnit != null) {
+        if (next === '') {
+          setKcalDraft('')
+        } else {
+          const q = parseFloat(next)
+          if (Number.isFinite(q)) {
+            setKcalDraft(String(Math.max(0, Math.round(q * perUnit))))
+          }
+        }
+      }
+    } else {
+      const next = k === 'back' ? removeLast(kcalDraft) : appendDigit(kcalDraft, k, false)
+      setKcalDraft(next)
+      setKcalTouched(true)
+      // kcal を手で打ち変えたら、 現在の数量で割って perUnit を再算出する。
+      // 結果として hint バナーも追従し、 次に数量を弄った時の換算基準が更新される。
+      if (next !== '' && qtyDraft !== '') {
+        const q = parseFloat(qtyDraft)
+        const kk = parseFloat(next)
+        if (Number.isFinite(q) && q > 0 && Number.isFinite(kk) && kk >= 0) {
+          setPerUnit(kk / q)
+        }
+      }
+    }
   }
   const handleToggle = () => {
     if (!allowToggle) return
     setMode((m) => (m === 'quantity' ? 'kcal' : 'quantity'))
   }
   const handleOk = () => {
-    onSubmit?.({ quantity: qtyDraft, kcal: kcalDraft })
+    onSubmit?.({
+      quantity: qtyDraft,
+      kcal: kcalDraft,
+      quantityTouched: qtyTouched,
+      kcalTouched,
+    })
   }
 
-  const hintLabel =
-    perUnitKcal == null
-      ? null
-      : quantityUnit
-        ? `1${quantityUnit} / ${perUnitKcal}kcal`
-        : `1単位 / ${perUnitKcal}kcal`
+  const hintLabel = (() => {
+    if (perUnit == null) return null
+    const rounded = Math.round(perUnit)
+    return quantityUnit
+      ? `1${quantityUnit} / ${rounded}kcal`
+      : `1単位 / ${rounded}kcal`
+  })()
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>

@@ -1,16 +1,14 @@
 import { getDb } from './index'
 
-export const PORTION_FACTORS = { small: 0.7, normal: 1.0, large: 1.3 }
-export const portionFactor = (p) => PORTION_FACTORS[p] ?? 1.0
-
 // items 配列を food_log にまとめて INSERT する。
 //
 // 1件あたりの item は:
-//   { name, quantity, unit, portion, baseKcal, matchedFoodId?, matchedKind? }
-// baseKcal は「並 (factor=1.0)」相当の値。実際の保存値は portion factor を掛けて算出する。
+//   { name, quantity, unit, kcal, matchedFoodId?, matchedKind?, kcalSource? }
+// kcal は最終値 (quantity 込みのその品目の合計 kcal)。 LLM の estimated_kcal や
+// computeKcalFromMatch の戻り値をそのまま入れる想定。
 // matchedKind は 'food' (foods 行) または 'recipe' (recipes 行)。 未指定なら 'food'。
 //
-// 戻り値: 挿入された food_log.id の配列（呼び元で後の UPDATE/DELETE に使える）
+// 戻り値: 挿入された food_log.id の配列 (呼び元で後の UPDATE/DELETE に使える)
 export const insertFoodLogItems = async (items, options = {}) => {
   if (!items || items.length === 0) return []
   const db = getDb()
@@ -24,14 +22,13 @@ export const insertFoodLogItems = async (items, options = {}) => {
   await db.withTransactionAsync(async () => {
     const stmt = await db.prepareAsync(
       `INSERT INTO food_log
-         (eaten_at, meal_type, name, quantity, unit, portion, kcal,
+         (eaten_at, meal_type, name, quantity, unit, kcal,
           ref_food_id, ref_kind, source, kcal_source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     try {
       for (const item of items) {
-        const factor = portionFactor(item.portion)
-        const kcal = item.baseKcal != null ? Math.round(item.baseKcal * factor) : null
+        const kcal = item.kcal != null ? Math.round(item.kcal) : null
         const refKind =
           item.matchedFoodId != null ? (item.matchedKind ?? 'food') : null
         // eslint-disable-next-line no-await-in-loop
@@ -41,7 +38,6 @@ export const insertFoodLogItems = async (items, options = {}) => {
           item.name,
           item.quantity ?? null,
           item.unit ?? null,
-          item.portion ?? 'normal',
           kcal,
           item.matchedFoodId ?? null,
           refKind,
@@ -83,10 +79,10 @@ export const insertFoodLogFromLabel = async ({
     }
     const res = await db.runAsync(
       `INSERT INTO food_log
-         (eaten_at, meal_type, name, quantity, unit, portion,
+         (eaten_at, meal_type, name, quantity, unit,
           kcal, protein, fat, carb, salt,
           ref_food_id, ref_kind, source)
-       VALUES (?, NULL, ?, ?, ?, 'normal', ?, ?, ?, ?, ?, ?, 'product', 'label_ocr')`,
+       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'product', 'label_ocr')`,
       [
         at,
         name,
@@ -105,10 +101,9 @@ export const insertFoodLogFromLabel = async ({
   return insertedId
 }
 
-// FoodCard 上での編集 (料理名 / portion) を food_log に反映する。
-// item は { name, portion, baseKcal, matchedFoodId? } のうち渡されたフィールドだけ更新する想定。
-// baseKcal と portion から保存値の kcal を計算し直して書き込む。
-// quantity / unit は現状 FoodCard に編集 UI が無いので呼び元から指定されたら更新する。
+// FoodCard 上での編集 (料理名 / 数量 / kcal) を food_log に反映する。
+// fields は { name, quantity, unit, kcal, matchedFoodId?, kcalSource? } のうち
+// 渡されたフィールドだけ更新する。
 export const updateFoodLogItem = async (foodLogId, fields) => {
   if (foodLogId == null) return false
   const db = getDb()
@@ -126,17 +121,9 @@ export const updateFoodLogItem = async (foodLogId, fields) => {
     sets.push('unit = ?')
     params.push(fields.unit ?? null)
   }
-  if ('portion' in fields) {
-    sets.push('portion = ?')
-    params.push(fields.portion ?? 'normal')
-  }
-  if ('baseKcal' in fields || 'portion' in fields) {
-    // portion か baseKcal のどちらかが変わったら最終 kcal を再計算する必要がある。
-    // 呼び元が両方 (もしくは合算済みの最終 kcal) を渡してくる前提。
-    const factor = portionFactor(fields.portion)
-    const kcal = fields.baseKcal != null ? Math.round(fields.baseKcal * factor) : null
+  if ('kcal' in fields) {
     sets.push('kcal = ?')
-    params.push(kcal)
+    params.push(fields.kcal != null ? Math.round(fields.kcal) : null)
   }
   if ('matchedFoodId' in fields) {
     sets.push('ref_food_id = ?')

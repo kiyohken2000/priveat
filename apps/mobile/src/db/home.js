@@ -75,7 +75,7 @@ export const getTodayMacros = async () => {
 export const getTodayMeals = async () => {
   const db = getDb()
   const rows = await db.getAllAsync(
-    `SELECT id, eaten_at, name, quantity, unit, portion, kcal, source
+    `SELECT id, eaten_at, name, quantity, unit, kcal, source
        FROM food_log
       WHERE date(eaten_at, 'localtime') = date('now', 'localtime')
       ORDER BY eaten_at DESC`,

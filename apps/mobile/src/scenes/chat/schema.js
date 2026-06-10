@@ -24,10 +24,9 @@ export const RecordSchema = {
           name: { type: 'string', description: '正規化した食品名' },
           quantity: { type: 'number', description: '数量' },
           unit: { type: 'string', description: '単位（g/個/本/杯/枚/人前 等）' },
-          portion: { type: 'string', description: '大盛り/少なめ 等のニュアンス（任意）' },
           estimated_kcal: {
             type: 'number',
-            description: 'この品目1食分の常識的なカロリー目安 (整数、任意)。食品DBに無いときのフォールバック用',
+            description: 'この品目 (quantity × unit) の合計 kcal の目安 (整数、任意)。大盛り/少なめ等のニュアンスもここに反映する。食品DBに無いときのフォールバック用',
           },
         },
         required: ['name', 'quantity', 'unit'],
@@ -221,7 +220,6 @@ const parseFoodKind = (parsed) => {
         name,
         quantity: coerceQuantity(it.quantity) ?? 1,
         unit: coerceUnit(it.unit) ?? '人前',
-        portion: typeof it.portion === 'string' ? it.portion : undefined,
         estimated_kcal: estimatedKcal,
       }
     })
@@ -411,9 +409,3 @@ export const parseStage2Output = (rawOutput, kind) => {
   return parseRecordOutput(injected)
 }
 
-export const normalizePortion = (raw) => {
-  if (!raw) return 'normal'
-  if (raw.includes('大')) return 'large'
-  if (raw.includes('少')) return 'small'
-  return 'normal'
-}

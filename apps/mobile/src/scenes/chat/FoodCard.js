@@ -12,27 +12,9 @@ import { colors, fontSize } from '../../theme'
 import FoodNameInput from '../../components/FoodNameInput'
 import NumericKeypadModal from '../../components/NumericKeypadModal'
 
-const PORTIONS = [
-  { value: 'small', label: '少なめ', factor: 0.7 },
-  { value: 'normal', label: '並', factor: 1.0 },
-  { value: 'large', label: '大盛り', factor: 1.3 },
-]
-
-const portionMeta = (value) => PORTIONS.find((p) => p.value === value) ?? PORTIONS[1]
-
-export const cycleNextPortion = (value) => {
-  const idx = PORTIONS.findIndex((p) => p.value === value)
-  const next = PORTIONS[(idx + 1) % PORTIONS.length]
-  return next.value
-}
-
-export const computeKcal = (item) => {
-  if (item.baseKcal == null) return null
-  return Math.round(item.baseKcal * portionMeta(item.portion).factor)
-}
+const itemKcal = (item) => (item?.kcal != null ? Math.round(item.kcal) : null)
 
 function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
-  const meta = portionMeta(item.portion)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(item.name ?? '')
   // 数値テンキー モーダル: open かどうか + 起動時のフォーカス対象 ('quantity' | 'kcal')。
@@ -59,12 +41,11 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
   const closeKeypad = () => setKeypad((s) => ({ ...s, open: false }))
 
   // テンキーモーダル確定。
-  //   - 数量が変わったら patch.quantity を反映 (現状の PRIVEAT は数量変更で kcal を
-  //     自動スケールしない。 portion セグメントが kcal を担うため二重制御回避。
-  //     portion 撤廃後の PR で 「数量 × 単位kcal」 モデルに統一予定)。
-  //   - kcal を手で打った場合は patch.baseKcal を逆算 (打った kcal ÷ portion factor) して
-  //     セット、 kcalSource='manual' で 「再計算で上書きしない」 印を立てる。
-  const onKeypadSubmit = ({ quantity: qNext, kcal: kNext }) => {
+  //   - quantity / kcal は 1 単位あたり kcal を介して双方向リンク済 (モーダル内部で計算済)。
+  //   - kcalTouched=true なら 「ユーザーが kcal を直接編集」 と判断して
+  //     kcalSource='manual' を立てる。 quantity だけ動かして kcal が自動換算で
+  //     変わったケースでは source を維持する (db / llm_estimate のまま)。
+  const onKeypadSubmit = ({ quantity: qNext, kcal: kNext, kcalTouched }) => {
     const patch = {}
     const qNumNext = qNext === '' ? null : parseFloat(qNext)
     const qCurrent = item.quantity ?? null
@@ -75,10 +56,12 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
     }
     const kNumNext = kNext === '' ? null : parseInt(kNext, 10)
     const kCurrent = kcal ?? null
-    if (kNumNext != null && !Number.isNaN(kNumNext) && kNumNext !== kCurrent) {
-      const factor = portionMeta(item.portion).factor || 1
-      patch.baseKcal = kNumNext / factor
-      patch.kcalSource = 'manual'
+    if (kNumNext == null && kCurrent != null) {
+      patch.kcal = null
+      if (kcalTouched) patch.kcalSource = null
+    } else if (kNumNext != null && !Number.isNaN(kNumNext) && kNumNext !== kCurrent) {
+      patch.kcal = kNumNext
+      if (kcalTouched) patch.kcalSource = 'manual'
     }
     if (Object.keys(patch).length > 0) {
       onUpdateItem?.(messageId, item.id, patch)
@@ -148,16 +131,6 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
           </Text>
         ) : null}
       </View>
-      <TouchableOpacity
-        style={styles.portionPill}
-        onPress={() =>
-          onUpdateItem?.(messageId, item.id, { portion: cycleNextPortion(item.portion) })
-        }
-        activeOpacity={0.7}
-        disabled={editing}
-      >
-        <Text style={styles.portionText}>{meta.label}</Text>
-      </TouchableOpacity>
       {editing ? (
         <TouchableOpacity onPress={cancelEdit} style={styles.iconBtn} activeOpacity={0.6}>
           <Text style={styles.cancelText}>×</Text>
@@ -196,7 +169,7 @@ export default function FoodCard({
   title,
 }) {
   const items = message.foodItems ?? []
-  const kcals = items.map(computeKcal)
+  const kcals = items.map(itemKcal)
   const hasUnknownKcal = kcals.some((k) => k == null)
   const totalKcal = kcals.reduce((sum, k) => sum + (k ?? 0), 0)
   const dailyTarget = message.dailyTotal?.target
@@ -262,7 +235,7 @@ export default function FoodCard({
           )}
         </TouchableOpacity>
       ) : null}
-      <Text style={styles.hint}>料理名 / 数量 / kcal タップで編集 / ピルで分量 / × で削除</Text>
+      <Text style={styles.hint}>料理名 / 数量 / kcal タップで編集 / × で削除</Text>
     </View>
   )
 }
@@ -328,17 +301,6 @@ const styles = StyleSheet.create({
     color: colors.darkPurple,
     marginTop: 2,
     opacity: 0.7,
-  },
-  portionPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 12,
-    backgroundColor: colors.lightPurple,
-  },
-  portionText: {
-    fontSize: fontSize.small,
-    color: colors.white,
-    fontWeight: '600',
   },
   iconBtn: {
     marginLeft: 6,

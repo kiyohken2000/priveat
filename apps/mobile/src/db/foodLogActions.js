@@ -16,7 +16,7 @@ export const getDatesWithFoodLog = async () => {
 export const getFoodLogByDate = async (date) => {
   const db = getDb()
   const rows = await db.getAllAsync(
-    `SELECT id, eaten_at, meal_type, name, quantity, unit, portion,
+    `SELECT id, eaten_at, meal_type, name, quantity, unit,
             kcal, protein, fat, carb, salt, source, kcal_source
        FROM food_log
       WHERE date(eaten_at, 'localtime') = ?
@@ -103,7 +103,7 @@ export const getFoodLogItem = async (id) => {
 
 // 編集. fields に含まれる列だけ UPDATE する（undefined はスキップ）。
 // 許可する列を明示してSQLインジェクション/不正列を防ぐ。
-const EDITABLE_COLS = ['eaten_at', 'name', 'quantity', 'unit', 'portion', 'kcal', 'kcal_source']
+const EDITABLE_COLS = ['eaten_at', 'name', 'quantity', 'unit', 'kcal', 'kcal_source']
 
 export const updateFoodLogItem = async (id, fields) => {
   const db = getDb()

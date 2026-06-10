@@ -470,7 +470,6 @@ export default function Home() {
                         <View style={styles.mealMetaRow}>
                           <Text style={styles.mealMeta}>
                             {m.quantity != null && m.unit ? `${m.quantity}${m.unit}` : ''}
-                            {m.portion && m.portion !== 'normal' ? ` (${m.portion})` : ''}
                           </Text>
                           <SourceBadge source={m.source ?? 'text_llm'} compact />
                         </View>
