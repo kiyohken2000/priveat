@@ -1924,6 +1924,7 @@ export default function Chat() {
       const patch = {}
       let nextName = before.name
       let nextQuantity = before.quantity ?? null
+      let nextUnit = before.unit ?? null
       let nextKcal = before.kcal ?? null
       let nextMatchedId = before.matchedFoodId ?? null
       let nextMatchedName = before.matchedName ?? null
@@ -1970,6 +1971,10 @@ export default function Chat() {
         nextQuantity = updates.quantity ?? null
         patch.quantity = nextQuantity
       }
+      if ('unit' in updates) {
+        nextUnit = updates.unit ?? null
+        patch.unit = nextUnit
+      }
       if ('kcal' in updates) {
         nextKcal = updates.kcal
         patch.kcal = nextKcal
@@ -1987,6 +1992,7 @@ export default function Chat() {
           await updateFoodLogItem(before.foodLogId, {
             name: nextName,
             quantity: nextQuantity,
+            unit: nextUnit,
             kcal: nextKcal,
             matchedFoodId: nextMatchedId,
             matchedKind: nextMatchedKind,
@@ -2214,6 +2220,31 @@ export default function Chat() {
               ? Math.round((ing.kcal * next) / ing.quantity)
               : ing.kcal
           return { ...ing, quantity: next, kcal: scaled }
+        }),
+      )
+    },
+    [applyRecipeIngredientsPatch],
+  )
+
+  // 材料の kcal をユーザーが手入力した場合。 kcalSource='manual' を立てて
+  // 「AI 推定が必要な未確定行」 から外す (= 保存ボタンが活性化する条件にも効く)。
+  // 以後の数量変更では updateRecipeIngredientQuantity が比例スケールするので、
+  // 「1 単位あたり kcal」は手入力値を基準に再計算され続ける。
+  const updateRecipeIngredientKcal = useCallback(
+    (messageId, ingId, kcalValue) => {
+      applyRecipeIngredientsPatch(messageId, (ings) =>
+        ings.map((ing) => {
+          if (ing.id !== ingId) return ing
+          const nextKcal =
+            kcalValue == null || kcalValue === ''
+              ? null
+              : Math.round(Number(kcalValue))
+          if (nextKcal != null && !Number.isFinite(nextKcal)) return ing
+          return {
+            ...ing,
+            kcal: nextKcal,
+            kcalSource: nextKcal != null ? 'manual' : null,
+          }
         }),
       )
     },
@@ -2680,6 +2711,7 @@ export default function Chat() {
             message={current}
             onChangeServings={updateRecipeServings}
             onChangeIngredientQuantity={updateRecipeIngredientQuantity}
+            onChangeIngredientKcal={updateRecipeIngredientKcal}
             onDeleteIngredient={deleteRecipeIngredient}
             onSave={handleSaveRecipe}
             onEstimateMissing={handleEstimateMissingRecipeKcal}
@@ -2721,6 +2753,7 @@ export default function Chat() {
       handleUnknownOcrSave,
       updateRecipeServings,
       updateRecipeIngredientQuantity,
+      updateRecipeIngredientKcal,
       deleteRecipeIngredient,
       handleSaveRecipe,
       handleEstimateMissingRecipeKcal,

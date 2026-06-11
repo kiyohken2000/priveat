@@ -13,7 +13,11 @@ import {
   View,
 } from 'react-native'
 import FoodNameInput from '../../components/FoodNameInput'
+import UnitChipsInput from '../../components/UnitChipsInput'
 import { colors, fontSize } from '../../theme'
+
+// レシピ材料での単位サジェスト。 g/ml 中心 + 計量スプーン。
+const UNIT_SUGGESTIONS = ['g', 'ml', '個', '本', '枚', '大さじ', '小さじ', 'カップ']
 import { computeKcalFromMatch } from '../../db/search'
 import {
   addRecipeIngredient,
@@ -448,6 +452,17 @@ export default function RecipeEditScreen() {
               placeholderTextColor={colors.gray}
               style={[styles.input, styles.ingName]}
             />
+            <View style={styles.ingKcalRow}>
+              <Text style={styles.subLabel}>kcal</Text>
+              <TextInput
+                value={ing.kcalDraft}
+                onChangeText={(v) => updateIng(ing.tempKey, { kcalDraft: v })}
+                keyboardType="number-pad"
+                placeholder="—"
+                placeholderTextColor={colors.gray}
+                style={styles.input}
+              />
+            </View>
             <View style={styles.ingRow}>
               <View style={styles.flex1}>
                 <Text style={styles.subLabel}>数量</Text>
@@ -462,23 +477,13 @@ export default function RecipeEditScreen() {
               </View>
               <View style={[styles.flex1, styles.gap]}>
                 <Text style={styles.subLabel}>単位</Text>
-                <TextInput
+                <UnitChipsInput
                   value={ing.unitDraft}
                   onChangeText={(v) => updateIng(ing.tempKey, { unitDraft: v })}
+                  suggestions={UNIT_SUGGESTIONS}
                   placeholder="g"
-                  placeholderTextColor={colors.gray}
-                  style={styles.input}
-                />
-              </View>
-              <View style={[styles.flex1, styles.gap]}>
-                <Text style={styles.subLabel}>kcal</Text>
-                <TextInput
-                  value={ing.kcalDraft}
-                  onChangeText={(v) => updateIng(ing.tempKey, { kcalDraft: v })}
-                  keyboardType="number-pad"
-                  placeholder="—"
-                  placeholderTextColor={colors.gray}
-                  style={styles.input}
+                  inputStyle={styles.input}
+                  chipsBelow
                 />
               </View>
             </View>
@@ -637,6 +642,8 @@ const styles = StyleSheet.create({
     borderColor: '#ecebf3',
   },
   ingName: { marginBottom: 8 },
+  // 1 行目: kcal を全幅で。 2 行目に 数量 / 単位 (ingRow)。
+  ingKcalRow: { marginBottom: 8 },
   ingRow: { flexDirection: 'row' },
   flex1: { flex: 1 },
   gap: { marginLeft: 8 },

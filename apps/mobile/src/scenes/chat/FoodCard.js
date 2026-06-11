@@ -12,6 +12,9 @@ import { colors, fontSize } from '../../theme'
 import FoodNameInput from '../../components/FoodNameInput'
 import NumericKeypadModal from '../../components/NumericKeypadModal'
 
+// チャットの数量編集モーダル内で出す単位チップ。 EditFoodScreen と同じ並び。
+const UNIT_SUGGESTIONS = ['杯', '個', '枚', '本', '玉', '皿', '食', 'g', 'ml']
+
 const itemKcal = (item) => (item?.kcal != null ? Math.round(item.kcal) : null)
 
 function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
@@ -45,7 +48,10 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
   //   - kcalTouched=true なら 「ユーザーが kcal を直接編集」 と判断して
   //     kcalSource='manual' を立てる。 quantity だけ動かして kcal が自動換算で
   //     変わったケースでは source を維持する (db / llm_estimate のまま)。
-  const onKeypadSubmit = ({ quantity: qNext, kcal: kNext, kcalTouched }) => {
+  //   - unitTouched=true なら patch.unit に新しい単位を載せる。 親 (Chat.updateFoodItem)
+  //     で DB と UI を更新する。 単位だけ変えて kcal を再計算するロジックは現状無し
+  //     (kcal はそのまま据え置き)。 必要なら同じモーダルで kcal を手入力すればよい。
+  const onKeypadSubmit = ({ quantity: qNext, kcal: kNext, unit: uNext, kcalTouched, unitTouched }) => {
     const patch = {}
     const qNumNext = qNext === '' ? null : parseFloat(qNext)
     const qCurrent = item.quantity ?? null
@@ -62,6 +68,13 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
     } else if (kNumNext != null && !Number.isNaN(kNumNext) && kNumNext !== kCurrent) {
       patch.kcal = kNumNext
       if (kcalTouched) patch.kcalSource = 'manual'
+    }
+    if (unitTouched) {
+      const uCurrent = item.unit ?? ''
+      const uNextStr = (uNext ?? '').trim()
+      if (uNextStr !== uCurrent) {
+        patch.unit = uNextStr || null
+      }
     }
     if (Object.keys(patch).length > 0) {
       onUpdateItem?.(messageId, item.id, patch)
@@ -151,6 +164,7 @@ function FoodRow({ item, kcal, messageId, onUpdateItem, onDeleteItem }) {
         initialMode={keypad.mode}
         quantityValue={item.quantity != null ? String(item.quantity) : ''}
         quantityUnit={item.unit ?? ''}
+        unitSuggestions={UNIT_SUGGESTIONS}
         kcalValue={kcal != null ? String(kcal) : ''}
         onSubmit={onKeypadSubmit}
         onClose={closeKeypad}

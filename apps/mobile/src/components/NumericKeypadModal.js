@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { colors, fontSize } from '../theme'
 
 // あすけん風の数値入力モーダル。 OS 標準キーボードを使わずに自作テンキーで
@@ -20,10 +20,14 @@ import { colors, fontSize } from '../theme'
 //   initialMode    : 'quantity' | 'kcal' (起動時のモード)
 //   quantityValue  : 数量の初期値 (string)
 //   quantityUnit   : 数量の単位ラベル ('杯', '個', 'g' 等)
+//   unitSuggestions: 単位チップ候補 (省略時はチップ非表示)。 quantity モードでだけ出す。
+//                    タップで現在単位を切替え、 onSubmit で unit / unitTouched を返す。
+//                    単位が変わると perUnit (1 単位あたり kcal) は意味を失うのでクリアする
+//                    (例: 杯 → 個 で 1杯200kcal を 1個200kcal とは扱わない)。
 //   kcalValue      : kcal の初期値 (string)
 //   perUnitKcal    : 1 単位あたりの kcal (省略時は quantity+kcal から派生を試みる)
 //   allowToggle    : モード切替ボタンを出すか (デフォルト true)
-//   onSubmit       : OK 時に { quantity, kcal } を渡す
+//   onSubmit       : OK 時に { quantity, kcal, unit, ... } を渡す
 //   onClose        : 閉じる
 
 const KEYS = [
@@ -70,6 +74,7 @@ export default function NumericKeypadModal({
   initialMode = 'quantity',
   quantityValue = '',
   quantityUnit = '',
+  unitSuggestions,
   kcalValue = '',
   perUnitKcal,
   allowToggle = true,
@@ -79,6 +84,8 @@ export default function NumericKeypadModal({
   const [mode, setMode] = useState(initialMode)
   const [qtyDraft, setQtyDraft] = useState(String(quantityValue ?? ''))
   const [kcalDraft, setKcalDraft] = useState(String(kcalValue ?? ''))
+  // 単位は props から初期化して内部で編集可能にする (チップ選択用)。
+  const [unitDraft, setUnitDraft] = useState(String(quantityUnit ?? ''))
   // 内部状態の 1 単位あたり kcal。 quantity 編集 → kcal 自動更新、
   // kcal 編集 → perUnit を再算出、 という双方向リンクを担う。
   const initialPerUnit = useMemo(
@@ -90,6 +97,7 @@ export default function NumericKeypadModal({
   // kcalSource='manual' を立てる根拠になる (auto-scale だけで変わった kcal は除外したい)。
   const [qtyTouched, setQtyTouched] = useState(false)
   const [kcalTouched, setKcalTouched] = useState(false)
+  const [unitTouched, setUnitTouched] = useState(false)
 
   // visible が立ち上がる瞬間に props で渡された値で再初期化する。
   // 親側で値が更新されてもモーダルを開き直さない限り反映しない (編集中の打鍵保護)。
@@ -99,15 +107,26 @@ export default function NumericKeypadModal({
       setMode(initialMode)
       setQtyDraft(String(quantityValue ?? ''))
       setKcalDraft(String(kcalValue ?? ''))
+      setUnitDraft(String(quantityUnit ?? ''))
       setPerUnit(derivePerUnit(quantityValue, kcalValue, perUnitKcal))
       setQtyTouched(false)
       setKcalTouched(false)
+      setUnitTouched(false)
     }
   }, [visible]) // eslint-disable-line
 
   const current = mode === 'quantity' ? qtyDraft : kcalDraft
-  const unitLabel = mode === 'quantity' ? quantityUnit || '' : 'kcal'
+  const unitLabel = mode === 'quantity' ? unitDraft || '' : 'kcal'
   const allowDecimal = mode === 'quantity'
+
+  // 単位チップタップ。 単位を切り替えると 1 単位あたり kcal の関係が壊れるので
+  // perUnit をクリアし、 以後の quantity 編集で kcal を自動スケールしないようにする。
+  const handlePickUnit = (u) => {
+    if (u === unitDraft) return
+    setUnitDraft(u)
+    setUnitTouched(true)
+    setPerUnit(null)
+  }
 
   const handleKey = (k) => {
     if (mode === 'quantity') {
@@ -149,18 +168,23 @@ export default function NumericKeypadModal({
     onSubmit?.({
       quantity: qtyDraft,
       kcal: kcalDraft,
+      unit: unitDraft,
       quantityTouched: qtyTouched,
       kcalTouched,
+      unitTouched,
     })
   }
 
   const hintLabel = (() => {
     if (perUnit == null) return null
     const rounded = Math.round(perUnit)
-    return quantityUnit
-      ? `1${quantityUnit} / ${rounded}kcal`
+    return unitDraft
+      ? `1${unitDraft} / ${rounded}kcal`
       : `1単位 / ${rounded}kcal`
   })()
+
+  const showUnitChips =
+    mode === 'quantity' && Array.isArray(unitSuggestions) && unitSuggestions.length > 0
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -190,6 +214,38 @@ export default function NumericKeypadModal({
               {unitLabel ? <Text style={styles.unitText}>{unitLabel}</Text> : null}
             </View>
           </View>
+
+          {showUnitChips ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.unitChipsRow}
+            >
+              {unitSuggestions.map((u) => {
+                const selected = unitDraft === u
+                return (
+                  <Pressable
+                    key={u}
+                    onPress={() => handlePickUnit(u)}
+                    style={({ pressed }) => [
+                      styles.unitChip,
+                      selected && styles.unitChipSelected,
+                      pressed && styles.unitChipPressed,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.unitChipText,
+                        selected && styles.unitChipTextSelected,
+                      ]}
+                    >
+                      {u}
+                    </Text>
+                  </Pressable>
+                )
+              })}
+            </ScrollView>
+          ) : null}
 
           {hintLabel ? (
             <View style={styles.hintBanner}>
@@ -315,6 +371,32 @@ const styles = StyleSheet.create({
     fontSize: fontSize.middle,
     color: colors.gray,
   },
+  unitChipsRow: {
+    flexDirection: 'row',
+    paddingVertical: 4,
+    paddingRight: 8,
+    gap: 6,
+    marginBottom: 8,
+  },
+  unitChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#dcd9ec',
+    backgroundColor: colors.white,
+  },
+  unitChipSelected: {
+    backgroundColor: colors.lightPurple,
+    borderColor: colors.lightPurple,
+  },
+  unitChipPressed: { opacity: 0.6 },
+  unitChipText: {
+    fontSize: fontSize.middle,
+    color: colors.darkPurple,
+    fontWeight: '600',
+  },
+  unitChipTextSelected: { color: colors.white },
   hintBanner: {
     backgroundColor: colors.lightPurple,
     borderRadius: 10,

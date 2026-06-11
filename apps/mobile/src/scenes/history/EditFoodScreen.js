@@ -9,7 +9,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native'
 import DateTimePickerModal from 'react-native-modal-datetime-picker'
@@ -18,8 +17,12 @@ import { getFoodLogItem, updateFoodLogItem } from '../../db/foodLogActions'
 import { computeKcalFromMatch, findBestFood } from '../../db/search'
 import FoodNameInput from '../../components/FoodNameInput'
 import NumericKeypadModal from '../../components/NumericKeypadModal'
+import UnitChipsInput from '../../components/UnitChipsInput'
 import { useActiveLLM, useActiveModel } from '../../state/modelContext'
 import { estimateKcalForFood } from '../../utils/aiKcal'
+
+// 食事ログ編集での単位サジェスト。 完成料理〜素材まで広めに。
+const UNIT_SUGGESTIONS = ['杯', '個', '枚', '本', '玉', '皿', '食', 'g', 'ml']
 
 const toNum = (v) => {
   if (v == null) return null
@@ -68,6 +71,11 @@ export default function EditFoodScreen() {
   //   選択後の最初の recompute はこちらを優先利用する。 手入力で名前が変わったら
   //   ref をクリアして findBestFood に戻す。
   const pickedFoodRef = useRef(null)
+  // ロード直後の name/quantity/unit を覚えておく。 これと現在値が全て一致している
+  // = 「画面に入っただけでユーザーは何も触っていない」状態。 この間は recompute の
+  // setKcal をスキップし、 DB に保存された kcal を尊重する (勝手な書き換えを防ぐ)。
+  // ユーザーが何か 1 フィールドでも編集すると差分が発生し、 以後は通常の auto 追従に戻る。
+  const initialFieldsRef = useRef(null)
   // AI 推定の進行中フラグと最後のエラー (UI ヒント用)
   const [aiBusy, setAiBusy] = useState(false)
   const [aiPhase, setAiPhase] = useState(null) // 'swapping' | 'generating' | null
@@ -93,6 +101,19 @@ export default function EditFoodScreen() {
       setUnit(row.unit ?? '')
       setKcal(row.kcal != null ? String(row.kcal) : '')
       setEatenAt(new Date(row.eaten_at))
+      // DB の kcal_source を kcalMode に復元する。 復元しないと kcalMode='auto' のまま
+      // useEffect の再計算で手入力 / AI 推定値が上書きされてしまう。
+      //   'manual'       → そのまま 'manual' (再計算しない)
+      //   'llm_estimate' → そのまま 'llm_estimate' (再計算しない)
+      //   'db' / null    → 'auto' (DB で再計算追従)
+      const src = row.kcal_source ?? null
+      setKcalMode(src === 'manual' || src === 'llm_estimate' ? src : 'auto')
+      // ロード時点の値を覚える (useEffect で「ユーザー未編集」判定に使う)。
+      initialFieldsRef.current = {
+        name: row.name ?? '',
+        quantity: row.quantity != null ? String(row.quantity) : '',
+        unit: row.unit ?? '',
+      }
     } catch (err) {
       console.warn('[editFood] load error:', err)
     } finally {
@@ -131,7 +152,17 @@ export default function EditFoodScreen() {
           return
         }
         setRecomputed(computed)
-        if (kcalMode === 'auto') setKcal(String(computed))
+        // ロード直後にユーザーが何も触っていない状態なら setKcal をスキップする。
+        // DB 保存値 (前回保存時の kcal) をそのまま尊重し、 「画面に入った瞬間に
+        // 値が書き換わる」 を防ぐ。 「再計算」 ボタンは recomputed != null なら
+        // 押下可能なので、 ユーザーが望めば手動で反映できる。
+        const initial = initialFieldsRef.current
+        const untouched =
+          initial != null
+          && initial.name === name
+          && initial.quantity === quantity
+          && initial.unit === unit
+        if (kcalMode === 'auto' && !untouched) setKcal(String(computed))
       } catch (e) {
         console.warn('[editFood] recompute failed:', e)
       }
@@ -211,7 +242,7 @@ export default function EditFoodScreen() {
 
   const openKeypad = (mode) => setKeypad({ open: true, mode })
   const closeKeypad = () => setKeypad((s) => ({ ...s, open: false }))
-  const onKeypadSubmit = ({ quantity: qNext, kcal: kNext, kcalTouched }) => {
+  const onKeypadSubmit = ({ quantity: qNext, kcal: kNext, unit: uNext, kcalTouched, unitTouched }) => {
     // 数量が変わったら反映。
     //   - auto モードのときは数量編集後の useEffect 再計算で kcal が DB から上書きされるので、
     //     モーダル側の auto-scale 結果は無視する。
@@ -219,7 +250,10 @@ export default function EditFoodScreen() {
     //     新しい数量に応じた kcal を採用する (kcal_source は維持)。
     //   - kcalTouched=true は 「ユーザーが kcal キーを直接叩いた」 印。 この場合は
     //     'manual' モードに切り替える (空文字なら 'auto' に戻す)。
+    //   - unitTouched=true は単位チップで切り替えた印。 Field 側の UnitChipsInput と
+    //     同じ unit state を更新する。 useEffect が再計算を回して kcal も追従する。
     if (qNext !== quantity) setQuantity(qNext)
+    if (unitTouched && uNext !== unit) setUnit(uNext)
     if (kcalTouched) {
       setKcal(kNext)
       setKcalMode(kNext === '' ? 'auto' : 'manual')
@@ -303,41 +337,6 @@ export default function EditFoodScreen() {
             style={styles.input}
           />
         </Field>
-
-        <View style={styles.row}>
-          <View style={styles.flex1}>
-            <Field label="数量">
-              <Pressable
-                onPress={() => openKeypad('quantity')}
-                style={({ pressed }) => [
-                  styles.input,
-                  styles.tappableInput,
-                  pressed && styles.btnPressed,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.tappableInputText,
-                    !quantity && styles.tappableInputPlaceholder,
-                  ]}
-                >
-                  {quantity || '例: 1'}
-                </Text>
-              </Pressable>
-            </Field>
-          </View>
-          <View style={[styles.flex1, { marginLeft: 12 }]}>
-            <Field label="単位">
-              <TextInput
-                value={unit}
-                onChangeText={setUnit}
-                placeholder="例: 杯"
-                placeholderTextColor={colors.gray}
-                style={styles.input}
-              />
-            </Field>
-          </View>
-        </View>
 
         <Field label="カロリー (kcal)">
           <View style={styles.kcalRow}>
@@ -424,6 +423,42 @@ export default function EditFoodScreen() {
           </Text>
         </Field>
 
+        <View style={styles.row}>
+          <View style={styles.flex1}>
+            <Field label="数量">
+              <Pressable
+                onPress={() => openKeypad('quantity')}
+                style={({ pressed }) => [
+                  styles.input,
+                  styles.tappableInput,
+                  pressed && styles.btnPressed,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.tappableInputText,
+                    !quantity && styles.tappableInputPlaceholder,
+                  ]}
+                >
+                  {quantity || '例: 1'}
+                </Text>
+              </Pressable>
+            </Field>
+          </View>
+          <View style={[styles.flex1, { marginLeft: 12 }]}>
+            <Field label="単位">
+              <UnitChipsInput
+                value={unit}
+                onChangeText={setUnit}
+                suggestions={UNIT_SUGGESTIONS}
+                placeholder="例: 杯"
+                inputStyle={styles.input}
+                chipsBelow
+              />
+            </Field>
+          </View>
+        </View>
+
         <Field label="日時">
           <Pressable
             onPress={() => setPickerVisible(true)}
@@ -453,6 +488,7 @@ export default function EditFoodScreen() {
           initialMode={keypad.mode}
           quantityValue={quantity}
           quantityUnit={unit}
+          unitSuggestions={UNIT_SUGGESTIONS}
           kcalValue={kcal}
           onSubmit={onKeypadSubmit}
           onClose={closeKeypad}

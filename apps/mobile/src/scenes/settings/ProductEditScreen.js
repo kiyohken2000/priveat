@@ -15,6 +15,10 @@ import {
 } from 'react-native'
 import FontIcon from 'react-native-vector-icons/FontAwesome'
 import { colors, fontSize } from '../../theme'
+import UnitChipsInput from '../../components/UnitChipsInput'
+
+// 商品の「1 単位の表示」サジェスト。 パッケージ商品の頻出単位。
+const UNIT_SUGGESTIONS = ['個', '袋', '本', 'パック', '缶', '食', 'g']
 import {
   deleteProductRow,
   getProduct,
@@ -391,35 +395,35 @@ export default function ProductEditScreen() {
         </Field>
 
         <Field label="1 単位の表示 (任意)">
-          <View style={styles.unitRow}>
-            <TextInput
-              value={servingDescDraft}
-              onChangeText={setServingDescDraft}
-              placeholder="例: 個 / 袋 / 本 / g / グラム"
-              placeholderTextColor={colors.gray}
-              style={[styles.input, styles.flex1]}
-            />
-            <Pressable
-              onPress={onEstimateUnit}
-              disabled={unitAiBusy || saving || !llm?.isReady}
-              style={({ pressed }) => [
-                styles.unitAiBtn,
-                (unitAiBusy || saving || !llm?.isReady) && styles.btnDisabled,
-                pressed && !unitAiBusy && !saving && llm?.isReady && styles.btnPressed,
-              ]}
-            >
-              {unitAiBusy ? (
-                <View style={styles.unitAiBusyInner}>
-                  <ActivityIndicator size="small" color={colors.white} />
-                  <Text style={styles.unitAiBtnText}>
-                    {unitAiPhase === 'swapping' ? '読込中' : '推定中'}
-                  </Text>
-                </View>
-              ) : (
-                <Text style={styles.unitAiBtnText}>AI 推定</Text>
-              )}
-            </Pressable>
-          </View>
+          <UnitChipsInput
+            value={servingDescDraft}
+            onChangeText={setServingDescDraft}
+            suggestions={UNIT_SUGGESTIONS}
+            placeholder="例: 個 / 袋 / 本 / g / グラム"
+            inputStyle={styles.input}
+            rightSlot={
+              <Pressable
+                onPress={onEstimateUnit}
+                disabled={unitAiBusy || saving || !llm?.isReady}
+                style={({ pressed }) => [
+                  styles.unitAiBtn,
+                  (unitAiBusy || saving || !llm?.isReady) && styles.btnDisabled,
+                  pressed && !unitAiBusy && !saving && llm?.isReady && styles.btnPressed,
+                ]}
+              >
+                {unitAiBusy ? (
+                  <View style={styles.unitAiBusyInner}>
+                    <ActivityIndicator size="small" color={colors.white} />
+                    <Text style={styles.unitAiBtnText}>
+                      {unitAiPhase === 'swapping' ? '読込中' : '推定中'}
+                    </Text>
+                  </View>
+                ) : (
+                  <Text style={styles.unitAiBtnText}>AI 推定</Text>
+                )}
+              </Pressable>
+            }
+          />
           <Text style={styles.unitHint}>
             商品 1 パックではなく、 自分が普段 1 回で食べる量を「1 単位」 にすると入力が楽です。{'\n'}
             例: 400g パックのヨーグルトを毎回 200g 食べるなら、 表示を「食」 にして 1 食 = 200g 分の kcal を入れる
@@ -664,17 +668,12 @@ const styles = StyleSheet.create({
     color: colors.darkPurple,
     backgroundColor: '#fafafe',
   },
-  unitRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
   unitHint: {
     fontSize: fontSize.small,
     color: colors.gray,
     lineHeight: 18,
     marginTop: 6,
   },
-  flex1: { flex: 1 },
   unitAiBtn: {
     marginLeft: 8,
     paddingHorizontal: 12,

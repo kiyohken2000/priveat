@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import {
   ActivityIndicator,
+  Pressable,
   StyleSheet,
   Text,
   TextInput,
@@ -9,6 +10,7 @@ import {
   View,
 } from 'react-native'
 import { colors, fontSize } from '../../theme'
+import NumericKeypadModal from '../../components/NumericKeypadModal'
 
 // kind='recipe' のパースとマッチ後に Chat.js が組み立てる recipeData の形:
 //   {
@@ -26,7 +28,15 @@ import { colors, fontSize } from '../../theme'
 //     savedRecipeId: number | null,
 //   }
 
-function IngredientRow({ ing, onChangeQuantity, onDelete, disabled }) {
+function IngredientRow({ ing, onChangeQuantity, onChangeKcal, onDelete, disabled }) {
+  const [keypadOpen, setKeypadOpen] = useState(false)
+
+  const onKeypadSubmit = ({ kcal: kNext, kcalTouched }) => {
+    setKeypadOpen(false)
+    if (!kcalTouched && kNext === String(ing.kcal ?? '')) return
+    onChangeKcal?.(ing.id, kNext)
+  }
+
   return (
     <View style={styles.row}>
       <View style={styles.rowMain}>
@@ -39,12 +49,20 @@ function IngredientRow({ ing, onChangeQuantity, onDelete, disabled }) {
             keyboardType="decimal-pad"
             editable={!disabled}
           />
-          <Text style={styles.unitText}>
-            {ing.unit} · {ing.kcal == null ? '— kcal' : `${ing.kcal} kcal`}
-            {ing.kcal != null && ing.kcalSource === 'llm_estimate' ? (
-              <Text style={styles.estimateBadge}>（推定）</Text>
-            ) : null}
-          </Text>
+          <Text style={styles.unitText}>{ing.unit} · </Text>
+          <Pressable
+            onPress={() => !disabled && setKeypadOpen(true)}
+            disabled={disabled}
+            hitSlop={6}
+            style={({ pressed }) => pressed && styles.kcalPressed}
+          >
+            <Text style={[styles.unitText, !disabled && styles.kcalTappable]}>
+              {ing.kcal == null ? '— kcal' : `${ing.kcal} kcal`}
+              {ing.kcal != null && ing.kcalSource === 'llm_estimate' ? (
+                <Text style={styles.estimateBadge}>（推定）</Text>
+              ) : null}
+            </Text>
+          </Pressable>
         </View>
         {ing.matchedName ? (
           <Text style={styles.matched} numberOfLines={1}>
@@ -62,6 +80,16 @@ function IngredientRow({ ing, onChangeQuantity, onDelete, disabled }) {
           <Text style={styles.deleteText}>×</Text>
         </TouchableOpacity>
       )}
+      <NumericKeypadModal
+        visible={keypadOpen}
+        subtitle={ing.name || undefined}
+        title="材料のカロリー"
+        initialMode="kcal"
+        allowToggle={false}
+        kcalValue={ing.kcal != null ? String(ing.kcal) : ''}
+        onSubmit={onKeypadSubmit}
+        onClose={() => setKeypadOpen(false)}
+      />
     </View>
   )
 }
@@ -70,6 +98,7 @@ export default function RecipeCard({
   message,
   onChangeServings,
   onChangeIngredientQuantity,
+  onChangeIngredientKcal,
   onDeleteIngredient,
   onSave,
   onEstimateMissing,
@@ -145,6 +174,9 @@ export default function RecipeCard({
           ing={ing}
           onChangeQuantity={(id, v) =>
             onChangeIngredientQuantity?.(message._id, id, v)
+          }
+          onChangeKcal={(id, v) =>
+            onChangeIngredientKcal?.(message._id, id, v)
           }
           onDelete={(id) => onDeleteIngredient?.(message._id, id)}
           disabled={disabled}
@@ -294,6 +326,12 @@ const styles = StyleSheet.create({
     fontSize: fontSize.small,
     color: colors.gray,
   },
+  // タップで開けることをほんのり示す薄い下線 (FoodCard と同じ手法)。
+  kcalTappable: {
+    textDecorationLine: 'underline',
+    textDecorationColor: colors.grayFourth,
+  },
+  kcalPressed: { opacity: 0.5 },
   matched: {
     fontSize: fontSize.small,
     color: colors.darkPurple,
