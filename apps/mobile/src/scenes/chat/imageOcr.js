@@ -16,11 +16,10 @@ export const captureFromCamera = async () => {
 }
 
 // 写真ライブラリから選択。キャンセル時は null を返す。
+// Android 13+ / iOS 14+ ではシステム写真ピッカー (PhotoPicker / PHPicker) が
+// 起動し、READ_MEDIA_IMAGES などの権限なしで選択結果だけが返るため、
+// 権限リクエストは行わない。
 export const pickFromLibrary = async () => {
-  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync()
-  if (perm.status !== 'granted') {
-    throw new Error('写真ライブラリの利用許可が必要です（設定アプリから有効化してください）')
-  }
   const result = await ImagePicker.launchImageLibraryAsync({
     quality: 0.8,
     allowsEditing: false,
