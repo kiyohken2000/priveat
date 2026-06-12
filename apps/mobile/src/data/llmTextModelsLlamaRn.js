@@ -44,6 +44,21 @@ export const LLM_LLAMA_RN_TEXT_MODELS = [
   // のような不自然表現や「頑張って」連発)。 coach には LFM2.5-JP を使うべき。
   // Gemma 4 E2B も検討したが、 thinking mode で n_predict を食い潰して JSON/応答が出ない
   // 上に推論が 4-5 倍遅く採用見送り。 別途 thinking off で追試する余地はある。
+  //
+  // 2026-06 追記: react-native-executorch v0.9.1 で Gemma 4 がネイティブ対応された
+  // (定数 GEMMA4_E2B / GEMMA4_E2B_MM)。 iOS は MLX (GPU/ANE) バックエンドが効くため、
+  // llama.rn (CPU) で見た「4-5x 遅い」問題が解消する可能性が高い。 ただし:
+  //   - parser 用途: 2.3B effective だが、 短い JP → JSON 抽出というナローな仕事で
+  //     Gemma 3 1B / LFM2.5-JP からの伸びは限定的。 thinking mode が executorch 側で
+  //     どう扱われるか要検証 (採用判断のクリティカルパス)。
+  //   - coach 用途: Gemma は多言語汎用なので JP 自然さは LFM2.5-JP (1.2B JP 特化) を
+  //     抜きにくい (1B JP 特化 > 2.3B 多言語 はこの規模では普通に起こる)。
+  //   - 真の勝ち目はマルチモーダル版 GEMMA4_E2B_MM (画像 + 音声)。 これは VLM 側の
+  //     置き換え候補として data/llmModelsVlm.js で別途検討すべき (本ファイルの対象外)。
+  // 結論: 本ファイル (llama.rn 経由 GGUF) に Gemma 4 を追加するメリットは薄い。
+  // 試すなら executorch 経由 (data/llmModels.js 側) で GEMMA4_E2B を登録するのが筋。
+  // 参考: unsloth/gemma-4-E2B-it-qat-GGUF (Q4_K_XL 2.62GB / Q2_K_XL 2.19GB) が
+  // QAT 由来で配布されているが、 iPhone 13 mini (RAM 4GB) では OOM リスクが高い。
   {
     id: 'gemma-3-1b-it-qat-q4',
     label: 'Gemma 3 1B Instruct',
