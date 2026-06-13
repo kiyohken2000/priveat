@@ -549,13 +549,13 @@ export default function BenchmarkScreen() {
     console.log('[targets]', targets.map((m) => `${m.label} (${isLlamaRn(m) ? 'llama.rn' : 'executorch'})`))
 
     try {
-      // coach プロンプトは engine 非依存。 parser は engine ごとに few-shot が変わる
-      // (executorch だけ短く、 llama.rn は多品目例つき) ので、 ループ内で都度組む。
-      let coachPrompt = null
+      // coach プロンプトは model.family ごとに変わる (Gemma4 は日本語拘束を強化)。
+      // parser も engine ごとに few-shot が変わる (executorch だけ短く、 llama.rn は
+      // 多品目例つき)。 どちらも model 依存なので、 context だけ先に取って prompt は
+      // ループ内で都度組む。
+      let coachContext = null
       if (role === 'coach') {
-        const context = await buildCoachingContext()
-        coachPrompt = buildCoachSystemPrompt(context)
-        console.log('[systemPrompt length]', coachPrompt.length, 'chars')
+        coachContext = await buildCoachingContext()
       }
 
       for (let i = 0; i < targets.length; i++) {
@@ -645,10 +645,11 @@ export default function BenchmarkScreen() {
           continue
         }
 
-        const systemPrompt = role === 'parser' ? buildParserSystemPrompt(engine) : coachPrompt
-        if (role === 'parser') {
-          console.log('[systemPrompt length]', systemPrompt.length, 'chars')
-        }
+        const systemPrompt =
+          role === 'parser'
+            ? buildParserSystemPrompt(engine)
+            : buildCoachSystemPrompt(coachContext, m)
+        console.log('[systemPrompt length]', systemPrompt.length, 'chars')
 
         const r = await runOneModel(m, systemPrompt, input.trim(), (phase) => {
           setProgress({ i, total: targets.length, modelLabel: m.label, phase })

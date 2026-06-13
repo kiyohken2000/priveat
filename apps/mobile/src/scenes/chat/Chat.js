@@ -1017,7 +1017,7 @@ export default function Chat() {
         if (mode === 'coach') {
           const context = await buildCoachingContext()
           if (cancelled) return
-          systemPrompt = buildCoachSystemPrompt(context)
+          systemPrompt = buildCoachSystemPrompt(context, coachModel)
           temperature = 0.5
         } else if (mode === 'recipe') {
           systemPrompt = buildRecipeSystemPrompt()
@@ -1526,7 +1526,7 @@ export default function Chat() {
           const context = await buildCoachingContext()
           llm.configure({
             chatConfig: {
-              systemPrompt: buildCoachSystemPrompt(context),
+              systemPrompt: buildCoachSystemPrompt(context, coachModel),
               initialMessageHistory: preservedHistory,
             },
             generationConfig: { temperature: 0.5 },
@@ -2491,7 +2491,7 @@ export default function Chat() {
               let temperature
               if (mode === 'coach') {
                 const context = await buildCoachingContext()
-                systemPrompt = buildCoachSystemPrompt(context)
+                systemPrompt = buildCoachSystemPrompt(context, coachModel)
                 temperature = 0.5
               } else if (mode === 'recipe') {
                 systemPrompt = buildRecipeSystemPrompt()

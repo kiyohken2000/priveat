@@ -1,4 +1,5 @@
 import {
+  GEMMA4_E2B,
   LFM2_5_1_2B_INSTRUCT_QUANTIZED,
   LFM2_5_350M_QUANTIZED,
   QWEN3_0_6B_QUANTIZED,
@@ -96,6 +97,22 @@ export const LLM_MODELS = [
     approxSizeMb: 900,
     minDeviceRamBytes: RAM_TIER.TIER_6GB,
     source: LFM2_5_1_2B_INSTRUCT_QUANTIZED,
+  },
+
+  // ---- Gemma 4 系（新規。Google MatFormer。iOS は MLX (GPU/ANE)） --------------
+  // 実行時は 2.3B 相当 (Elastic) だが、 RAM にはフル 5.1B 分のパラメータを展開する。
+  // MLX int4 で実ファイル ~2.76GB のため、 安全側に TIER_8GB (iPhone 15 Pro 以降) を要求。
+  // thinking mode が executorch 経由でどう扱われるか未確認 (n_predict 食い潰し問題の再発有無)。
+  {
+    id: 'gemma4-e2b-q',
+    label: 'Gemma 4 E2B (量子化)',
+    description:
+      'Google MatFormer。 実行時 2.3B / RAM 上 5.1B。 iOS は MLX バックエンドで高速化。',
+    badge: 'Gemma',
+    family: 'Gemma4',
+    approxSizeMb: 2760,
+    minDeviceRamBytes: RAM_TIER.TIER_8GB,
+    source: GEMMA4_E2B,
   },
 ]
 
