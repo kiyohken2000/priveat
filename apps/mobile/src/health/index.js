@@ -87,6 +87,9 @@ const fetchIOS = async ({ daysBack }) => {
 }
 
 // ---- Android ----
+// Steps は Google Play の Health Connect 「最小範囲」ポリシーで非承認になったため
+// 取得しない (アプリ内の歩数機能が UI 上小さく、 reviewer に最小範囲違反と判定された)。
+// iOS の HealthKit は同ポリシー適用外なので fetchIOS では引き続き取得している。
 const fetchAndroid = async ({ daysBack, limit }) => {
   const {
     initialize,
@@ -112,7 +115,6 @@ const fetchAndroid = async ({ daysBack, limit }) => {
   await requestPermission([
     { accessType: 'read', recordType: 'Weight' },
     { accessType: 'read', recordType: 'ActiveCaloriesBurned' },
-    { accessType: 'read', recordType: 'Steps' },
   ])
 
   const { startDate, endDate } = rangeFromDaysBack(daysBack)
@@ -127,10 +129,9 @@ const fetchAndroid = async ({ daysBack, limit }) => {
   // health-connect は pageSize 省略で全件、指定で制限。limit<=0 は省略扱い。
   if (limit > 0) filter.pageSize = limit
 
-  const [weightRes, energyRes, stepsRes] = await Promise.all([
+  const [weightRes, energyRes] = await Promise.all([
     readRecords('Weight', filter),
     readRecords('ActiveCaloriesBurned', filter),
-    readRecords('Steps', filter),
   ])
 
   return {
@@ -142,10 +143,7 @@ const fetchAndroid = async ({ daysBack, limit }) => {
       value: r.energy?.inKilocalories ?? null,
       time: r.startTime,
     })),
-    steps: (stepsRes?.records ?? []).map((r) => ({
-      value: r.count ?? null,
-      time: r.startTime,
-    })),
+    steps: [],
   }
 }
 
