@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
 import { Provider } from 'react-redux'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
+import { KeyboardProvider } from 'react-native-keyboard-controller'
 import { ActionSheetProvider } from '@expo/react-native-action-sheet'
 import { initExecutorch } from 'react-native-executorch'
 import { ExpoResourceFetcher } from 'react-native-executorch-expo-resource-fetcher'
@@ -68,13 +69,15 @@ export default function App() {
   }
   return (
     <SafeAreaProvider>
-      <ActionSheetProvider>
-        <Provider store={store}>
-          <ModelProvider>
-            <Router />
-          </ModelProvider>
-        </Provider>
-      </ActionSheetProvider>
+      <KeyboardProvider>
+        <ActionSheetProvider>
+          <Provider store={store}>
+            <ModelProvider>
+              <Router />
+            </ModelProvider>
+          </Provider>
+        </ActionSheetProvider>
+      </KeyboardProvider>
     </SafeAreaProvider>
   )
 }

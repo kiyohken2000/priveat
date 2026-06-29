@@ -8,13 +8,19 @@
       "developmentClient": true,
       "distribution": "internal",
       "channel": "development",
+      "android": {
+        "resourceClass": "large"
+      },
       "ios": {
         "simulator": false
       }
     },
     "preview": {
       "distribution": "internal",
-      "channel": "preview"
+      "channel": "preview",
+      "android": {
+        "resourceClass": "large"
+      }
     },
     "production": {
       "autoIncrement": true,

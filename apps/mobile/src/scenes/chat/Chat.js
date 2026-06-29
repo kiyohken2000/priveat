@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   StatusBar,
@@ -12,6 +13,8 @@ import {
   View,
 } from 'react-native'
 import { Bubble, GiftedChat, InputToolbar, Message, MessageText, Send } from 'react-native-gifted-chat'
+import { SafeAreaView } from 'react-native-safe-area-context'
+import { KeyboardAvoidingView as KCKeyboardAvoidingView } from 'react-native-keyboard-controller'
 import { EnrichedMarkdownText } from 'react-native-enriched-markdown'
 import { useActiveLLM, useActiveModel } from '../../state/modelContext'
 import { buildCoachingContext } from '../../coaching/context'
@@ -1301,7 +1304,10 @@ export default function Chat() {
     })
     const all = [...items, ...localMessages]
     all.sort((a, b) => a.createdAt - b.createdAt)
-    return all.reverse()
+    // iOS は GiftedChat の inverted FlatList (newest first) を使うため反転して返す。
+    // Android は RN 0.85 + Fabric の inverted FlatList バグ (文字の上下反転) を避けるため
+    // isInverted={false} で運用し、 chronological (oldest first → 画面下が最新) のまま渡す。
+    return Platform.OS === 'ios' ? all.reverse() : all
   }, [llm.messageHistory, llmCards, localMessages, mode])
 
   // モード切り替え: 現在モードのスナップショットを ref に保存し、mode + currentRole を更新。
@@ -2920,13 +2926,35 @@ export default function Chat() {
   }
 
   return (
-    <View style={styles.chatRoot}>
+    <SafeAreaView style={styles.chatRoot} edges={['top', 'right', 'left']}>
       <StatusBar barStyle="dark-content" backgroundColor={colors.white} />
+      {/*
+        GiftedChat 3.x は内部 KeyboardAvoidingView を削除しているため iOS / Android とも
+        手動でキーボード回避が必要。 Android は compileSdk 36 で Edge-to-Edge 強制となり
+        windowSoftInputMode='adjustResize' も効かないので、 両プラットフォームで
+        react-native-keyboard-controller の KeyboardAvoidingView を使う。
+        iOS は 'padding'、 Android も 'padding' でほぼ同じ挙動になる。
+      */}
+      <KCKeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
       <GiftedChat
         messages={messages}
         onSend={onSend}
         user={USER}
         text={inputText}
+        // Android は RN 0.85 + Fabric の inverted FlatList バグで文字が上下反転するため、
+        // isInverted=false で chronological 表示にしてバグ自体を回避する。
+        // iOS はデフォルトの inverted=true を維持 (scrollToBottom が綺麗に動く)。
+        isInverted={Platform.OS === 'ios'}
+        // Android のみ: GiftedChat 内部の renderChatEmpty は isInverted=false 時に
+        // `transform: [{ scaleY: -1 }]` で empty content をラップする (MessagesContainer 内)。
+        // この scaleY(-1) が Android Fabric では 180° 回転として描画されてしまうため、
+        // listProps.ListEmptyComponent を直接渡して GiftedChat の wrap をバイパスする。
+        // 注: GiftedChat v3.x のプロップ名は `listViewProps` ではなく `listProps`。
+        listProps={
+          Platform.OS === 'android'
+            ? { ListEmptyComponent: renderChatEmpty }
+            : undefined
+        }
         placeholder={
           mode === 'coach'
             ? '入力例: 今週どうだった？（自由に質問できます）'
@@ -3074,12 +3102,13 @@ export default function Chat() {
         }}
         alwaysShowSend
       />
+      </KCKeyboardAvoidingView>
       {toast ? (
         <View pointerEvents="none" style={styles.toastWrap}>
           <Text style={styles.toastText}>{toast}</Text>
         </View>
       ) : null}
-    </View>
+    </SafeAreaView>
   )
 }
 
@@ -3239,7 +3268,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 24,
     paddingVertical: 16,
-    transform: [{ scaleY: -1 }],
+    // iOS は GiftedChat の inverted FlatList を使うので、 empty content の上下反転を打ち消す。
+    // Android は isInverted={false} で運用するため counter-flip 不要。
+    ...Platform.select({ ios: { transform: [{ scaleY: -1 }] } }),
   },
   emptyHowTo: {
     fontSize: fontSize.small,

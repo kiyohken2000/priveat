@@ -112,10 +112,25 @@ const fetchAndroid = async ({ daysBack, limit }) => {
   }
 
   await initialize()
-  await requestPermission([
+  // 一度ユーザーが拒否した recordType は requestPermission を再度呼んでも
+  // ダイアログが出ない (Android 側がスロットルする) ため、戻り値で実際に許可された
+  // ものだけを readRecords する。未許可で readRecords すると SecurityException で落ちる。
+  const granted = await requestPermission([
     { accessType: 'read', recordType: 'Weight' },
     { accessType: 'read', recordType: 'ActiveCaloriesBurned' },
   ])
+  const grantedKeys = new Set(
+    (granted ?? []).map((p) => `${p.accessType}:${p.recordType}`),
+  )
+  const canReadWeight = grantedKeys.has('read:Weight')
+  const canReadEnergy = grantedKeys.has('read:ActiveCaloriesBurned')
+  console.log('[health][android] granted:', Array.from(grantedKeys))
+
+  if (!canReadWeight && !canReadEnergy) {
+    throw new Error(
+      'Health Connect の権限が付与されていません。Health Connect アプリの「アプリの権限」から Priveat に体重 / 消費カロリーの読み取りを許可してください。',
+    )
+  }
 
   const { startDate, endDate } = rangeFromDaysBack(daysBack)
   const filter = {
@@ -130,8 +145,8 @@ const fetchAndroid = async ({ daysBack, limit }) => {
   if (limit > 0) filter.pageSize = limit
 
   const [weightRes, energyRes] = await Promise.all([
-    readRecords('Weight', filter),
-    readRecords('ActiveCaloriesBurned', filter),
+    canReadWeight ? readRecords('Weight', filter) : Promise.resolve(null),
+    canReadEnergy ? readRecords('ActiveCaloriesBurned', filter) : Promise.resolve(null),
   ])
 
   return {

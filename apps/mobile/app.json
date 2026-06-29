@@ -6,7 +6,7 @@
       "ios",
       "android"
     ],
-    "version": "1.0.5",
+    "version": "1.0.6",
     "orientation": "portrait",
     "icon": "./assets/images/logo-sm.png",
     "updates": {
@@ -20,7 +20,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "net.votepurchase.priveat",
-      "buildNumber": "6",
+      "buildNumber": "7",
       "infoPlist": {
         "CFBundleDevelopmentRegion": "ja_JP",
         "ITSAppUsesNonExemptEncryption": false
@@ -33,7 +33,7 @@
     },
     "android": {
       "package": "net.votepurchase.priveat",
-      "versionCode": 8,
+      "versionCode": 9,
       "userInterfaceStyle": "automatic",
       "permissions": [
         "android.permission.VIBRATE",
@@ -114,6 +114,7 @@
         }
       ],
       "react-native-health-connect",
+      "./plugins/with-health-connect-delegate.js",
       "@react-native-community/datetimepicker"
     ],
     "extra": {
