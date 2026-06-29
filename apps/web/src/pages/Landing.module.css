@@ -596,19 +596,6 @@ a.storeBadge:hover {
   width: auto;
 }
 
-.storeBadgeDisabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-  filter: grayscale(0.5);
-}
-
-.storeBadgeNote {
-  font-size: 11px;
-  color: var(--text);
-  opacity: 0.85;
-  letter-spacing: 0.06em;
-}
-
 /* ============ Lightbox (Medium-style click-to-zoom) ============ */
 .lightbox {
   position: fixed;

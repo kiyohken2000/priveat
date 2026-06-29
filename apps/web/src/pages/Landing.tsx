@@ -401,7 +401,7 @@ export default function Landing() {
         <div className={s.closingInner}>
           <h2 className={s.closingTitle}>ダウンロード</h2>
           <p className={s.closingLead}>
-            App Store で配信中です。 Google Play は審査中です。
+            App Store と Google Play で配信中です。
           </p>
           <div className={s.storeBadges}>
             <a
@@ -413,13 +413,15 @@ export default function Landing() {
             >
               <img src="/badges/appstore.png" alt="App Store でダウンロード" />
             </a>
-            <span
-              className={`${s.storeBadge} ${s.storeBadgeDisabled}`}
-              aria-label="Google Play は準備中"
+            <a
+              href="https://play.google.com/store/apps/details?id=net.votepurchase.priveat"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.storeBadge}
+              aria-label="Google Play でダウンロード"
             >
-              <img src="/badges/googleplay.png" alt="Google Play (準備中)" />
-              <span className={s.storeBadgeNote}>準備中</span>
-            </span>
+              <img src="/badges/googleplay.png" alt="Google Play でダウンロード" />
+            </a>
             <a
               href="https://buymeacoffee.com/votepurchase"
               target="_blank"
