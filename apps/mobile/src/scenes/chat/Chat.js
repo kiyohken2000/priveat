@@ -1793,18 +1793,28 @@ export default function Chat() {
   )
 
   // 撮影/ライブラリ選択の共通 ActionSheet (OCR と VLM どちらの handler でも使う)
+  // Android: @expo/react-native-action-sheet 4.1.x の CustomActionSheet は、
+  //   1 つ目のシート選択直後 (animation 完了コールバック内、setState({isVisible:false})
+  //   と同フレーム) に 2 つ目の showActionSheetWithOptions を呼ぶと、state がまだ flush
+  //   されておらず isVisible=true 判定で _deferAfterAnimation に再代入されるが、
+  //   animation は既に終わっているため永久に呼ばれず 2 つ目のシートが出ない。
+  //   setTimeout(0) で 1 tick 遅らせて state を反映させてから呼ぶ。
+  //   iOS は ActionSheetIOS (native) を使うので無関係だが、setTimeout(0) でも体感差が
+  //   無いので Platform 分岐はしない。
   const showPickerSheet = useCallback(
     (callback) => {
-      showActionSheetWithOptions(
-        {
-          options: ['カメラで撮影', 'ライブラリから選択', 'キャンセル'],
-          cancelButtonIndex: 2,
-        },
-        (selectedIndex) => {
-          if (selectedIndex === 0) callback(captureFromCamera)
-          else if (selectedIndex === 1) callback(pickFromLibrary)
-        },
-      )
+      setTimeout(() => {
+        showActionSheetWithOptions(
+          {
+            options: ['カメラで撮影', 'ライブラリから選択', 'キャンセル'],
+            cancelButtonIndex: 2,
+          },
+          (selectedIndex) => {
+            if (selectedIndex === 0) callback(captureFromCamera)
+            else if (selectedIndex === 1) callback(pickFromLibrary)
+          },
+        )
+      }, 0)
     },
     [showActionSheetWithOptions],
   )
